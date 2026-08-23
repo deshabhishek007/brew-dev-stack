@@ -73,21 +73,29 @@ bin/devstack config     # your name, email, admin username → ~/.config/brew-de
 Then, per site:
 
 ```bash
-bin/devstack new myblog
+bin/devstack new myblog                    # WordPress (default)
+bin/devstack new myapp --type=laravel      # Laravel
+bin/devstack new thing --type=plain        # empty PHP project
 ```
 
-That creates the database and a **dedicated database user** (not root, so one site
-cannot drop another's data), downloads and installs WordPress, writes a `wp-config.php`
-with debug logging and `WP_ENVIRONMENT_TYPE=local`, sets pretty permalinks, adds the
-hostname to the certificate, and prints a generated admin password — shown once.
+Every type gets a database and a **dedicated database user** — not root, so one site
+cannot drop another's data — plus a certificate entry for its hostname.
 
-```
-  URL       https://myblog.test
-  Username  you
-  Password  <generated>
-```
+| Type | What you get |
+|---|---|
+| `wordpress` | core downloaded and installed, `wp-config.php` with debug logging and `WP_ENVIRONMENT_TYPE=local`, pretty permalinks, and a generated admin password shown once |
+| `laravel` | `composer create-project`, `.env` wired to the database and `APP_URL`, migrations run |
+| `plain` | a `public/` docroot with a starter `index.php`, and the credentials in `README.md` |
 
-Change it in Users → Profile, or `wp user update ... --user_pass=...`.
+## Where your settings live
+
+`SITES_DIR`, `TLD` and `PHP_VERSION` are chosen at install time and recorded in
+`~/.config/brew-dev-stack/config`, so every command afterwards uses the same values.
+Environment variables still override them for a single invocation.
+
+```bash
+SITES_DIR=~/code TLD=localdev ./install.sh   # recorded, not just used once
+```
 
 ## Managing sites
 

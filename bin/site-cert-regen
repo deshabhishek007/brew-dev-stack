@@ -12,8 +12,16 @@
 #
 set -euo pipefail
 
-SITES_DIR="${SITES_DIR:-$HOME/sites}"
-TLD="${TLD:-test}"
+# Settings resolve as: environment variable > config file > default.
+# The config file is written by install.sh so the CLI uses the same sites
+# directory, TLD and PHP version the stack was actually configured with.
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/brew-dev-stack/config"
+_env_TLD="${TLD:-}"; _env_SITES="${SITES_DIR:-}"; _env_PHP="${PHP_VERSION:-}"
+# shellcheck source=/dev/null
+[[ -f "$CONFIG_FILE" ]] && . "$CONFIG_FILE"
+TLD="${_env_TLD:-${TLD:-test}}"
+SITES_DIR="${_env_SITES:-${SITES_DIR:-$HOME/sites}}"
+PHP_VERSION="${_env_PHP:-${PHP_VERSION:-8.3}}"
 BREW="$(brew --prefix)"
 CERTDIR="$BREW/etc/nginx/certs"
 

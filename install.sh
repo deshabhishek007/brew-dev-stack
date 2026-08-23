@@ -206,6 +206,39 @@ if [[ "$WITH_ADMINER" == "1" ]]; then
   fi
 fi
 
+# Persist the layout so the CLI uses the same values. Without this, installing
+# with a non-default SITES_DIR or TLD leaves every devstack command falling back
+# to ~/sites and .test, silently operating on the wrong paths.
+CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/brew-dev-stack"
+CFG="$CFG_DIR/config"
+if is_dry; then
+  dry "record SITES_DIR / TLD / PHP_VERSION in $CFG"
+else
+  mkdir -p "$CFG_DIR"
+  ADMIN_NAME=""; ADMIN_EMAIL=""; ADMIN_USER=""
+  # shellcheck source=/dev/null
+  [[ -f "$CFG" ]] && . "$CFG"
+  cat > "$CFG" <<EOF
+# brew-dev-stack configuration.
+
+# Stack layout (written by install.sh; environment variables still override).
+SITES_DIR="$SITES_DIR"
+TLD="$TLD"
+PHP_VERSION="$PHP_VERSION"
+EOF
+  if [[ -n "$ADMIN_EMAIL" ]]; then
+    cat >> "$CFG" <<EOF
+
+# Used when creating new sites.
+ADMIN_NAME="$ADMIN_NAME"
+ADMIN_EMAIL="$ADMIN_EMAIL"
+ADMIN_USER="$ADMIN_USER"
+EOF
+  fi
+  chmod 600 "$CFG"
+  ok "settings recorded in $CFG"
+fi
+
 # --- certificates ----------------------------------------------------------
 bold "Certificates"
 if [[ ! -d "$(mkcert -CAROOT 2>/dev/null)" ]] || ! security find-certificate -c mkcert /Library/Keychains/System.keychain >/dev/null 2>&1; then

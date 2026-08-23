@@ -4,9 +4,16 @@
 #
 set -euo pipefail
 
-TLD="${TLD:-test}"
-PHP_VERSION="${PHP_VERSION:-8.3}"
-SITES_DIR="${SITES_DIR:-$HOME/sites}"
+# Settings resolve as: environment variable > config file > default.
+# The config file is written by install.sh so the CLI uses the same sites
+# directory, TLD and PHP version the stack was actually configured with.
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/brew-dev-stack/config"
+_env_TLD="${TLD:-}"; _env_SITES="${SITES_DIR:-}"; _env_PHP="${PHP_VERSION:-}"
+# shellcheck source=/dev/null
+[[ -f "$CONFIG_FILE" ]] && . "$CONFIG_FILE"
+TLD="${_env_TLD:-${TLD:-test}}"
+SITES_DIR="${_env_SITES:-${SITES_DIR:-$HOME/sites}}"
+PHP_VERSION="${_env_PHP:-${PHP_VERSION:-8.3}}"
 BREW="$(brew --prefix)"
 PHPSHORT="${PHP_VERSION//./}"
 
@@ -19,7 +26,8 @@ usage() {
 Usage: devstack <command>
 
   config     one-time setup: your name, email and admin username
-  new <name> create a WordPress site: database, core, install, certificate
+  new <name> [--type=wordpress|laravel|plain]
+             create a site: database, scaffolding, certificate
   list       every site, its type, git repo and URL
   adminer    install/update Adminer (MySQL + PostgreSQL + SQLite web UI)
   rm <name>  delete a site and its database (asks you to confirm by name)
@@ -249,8 +257,7 @@ cmd_mysql_perf() {
 }
 
 # --- one-time onboarding ---------------------------------------------------
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/brew-dev-stack"
-CONFIG_FILE="$CONFIG_DIR/config"
+CONFIG_DIR="$(dirname "$CONFIG_FILE")"
 
 load_config() { [[ -f "$CONFIG_FILE" ]] && . "$CONFIG_FILE"; return 0; }
 
@@ -277,8 +284,18 @@ cmd_config() {
   [[ "$user" =~ ^[A-Za-z0-9_.-]+$ ]] || { bad "Username: letters, digits, dot, underscore, hyphen only."; exit 1; }
 
   mkdir -p "$CONFIG_DIR"
+  # Rewrite the whole file, carrying the stack settings through — they are
+  # written by install.sh and losing them would point the CLI at the wrong
+  # sites directory and TLD.
   cat > "$CONFIG_FILE" <<EOF
-# brew-dev-stack — used when creating new sites.
+# brew-dev-stack configuration.
+
+# Stack layout (written by install.sh; environment variables still override).
+SITES_DIR="$SITES_DIR"
+TLD="$TLD"
+PHP_VERSION="$PHP_VERSION"
+
+# Used when creating new sites.
 ADMIN_NAME="$name"
 ADMIN_EMAIL="$email"
 ADMIN_USER="$user"
@@ -291,6 +308,11 @@ EOF
 
 # --- new WordPress site ----------------------------------------------------
 # Alphanumeric only: avoids quoting hazards in wp-config.php, SQL and shells.
+site_db_name() { local n="${1//-/_}"; printf 'dev_%s' "${n:0:60}"; }
+
+# Databases were prefixed wp_ before multiple project types existed.
+site_db_candidates() { local n="${1//-/_}"; printf 'dev_%s\nwp_%s\n' "${n:0:60}" "${n:0:60}"; }
+
 gen_password() {
   # No pipes: `tr ... | head -c N` makes head close the pipe early, SIGPIPEs tr,
   # and with `set -o pipefail` that aborts the whole script — intermittently,
@@ -304,8 +326,16 @@ gen_password() {
 mysql_root() { mysql -u"${DB_ADMIN_USER:-root}" ${DB_ADMIN_PASS:+-p"$DB_ADMIN_PASS"} "$@"; }
 
 cmd_new() {
-  local site="${1:-}"
-  [[ -n "$site" ]] || { bad "Usage: devstack new <sitename>"; exit 1; }
+  local site="${1:-}" type="wordpress"
+  shift || true
+  for a in "$@"; do
+    case "$a" in
+      --type=*) type="${a#--type=}" ;;
+      *) bad "Unknown option: $a"; exit 1 ;;
+    esac
+  done
+  [[ -n "$site" ]] || { bad "Usage: devstack new <sitename> [--type=wordpress|laravel|plain]"; exit 1; }
+  case "$type" in wordpress|laravel|plain) ;; *) bad "Unknown type '$type'. Use wordpress, laravel or plain."; exit 1 ;; esac
 
   load_config
   [[ -n "${ADMIN_EMAIL:-}" ]] || { bad "Not configured. Run:  devstack config"; exit 1; }
@@ -314,15 +344,17 @@ cmd_new() {
   [[ "$site" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || {
     bad "Site name must be lowercase letters, digits and hyphens (no spaces or underscores)."; exit 1; }
 
-  command -v wp >/dev/null || { bad "wp-cli not found:  brew install wp-cli"; exit 1; }
+  case "$type" in
+    wordpress) command -v wp >/dev/null || { bad "wp-cli not found:  brew install wp-cli"; exit 1; } ;;
+    laravel)   command -v composer >/dev/null || { bad "composer not found:  brew install composer"; exit 1; } ;;
+  esac
   mysql_root -N -e "SELECT 1" >/dev/null 2>&1 || { bad "Cannot connect to MySQL as ${DB_ADMIN_USER:-root}."; exit 1; }
 
   local dir="$SITES_DIR/$site"
   [[ -e "$dir" ]] && { bad "$dir already exists."; exit 1; }
 
   # MySQL identifiers cannot contain hyphens without quoting; normalise.
-  local db="wp_${site//-/_}"
-  db="${db:0:64}"
+  local db; db="$(site_db_name "$site")"
   local dbuser="${db:0:32}"
   local dbpass adminpass url
   dbpass="$(gen_password)"
@@ -344,47 +376,104 @@ cmd_new() {
   mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$dbuser'@'127.0.0.1';"
   mysql_root -e "FLUSH PRIVILEGES;"
 
-  info_step "downloading WordPress"
-  wp core download --path="$dir" --quiet
+  case "$type" in
 
-  info_step "wp-config.php"
-  wp config create --path="$dir" --dbname="$db" --dbuser="$dbuser" --dbpass="$dbpass" \
-     --dbhost=127.0.0.1 --skip-check --quiet \
-     --extra-php <<'PHPEOF'
+  wordpress)
+    info_step "downloading WordPress"
+    wp core download --path="$dir" --quiet
+
+    info_step "wp-config.php"
+    wp config create --path="$dir" --dbname="$db" --dbuser="$dbuser" --dbpass="$dbpass" \
+       --dbhost=127.0.0.1 --skip-check --quiet \
+       --extra-php <<'PHPEOF'
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
 define( 'WP_ENVIRONMENT_TYPE', 'local' );
-define( 'DISALLOW_FILE_EDIT', false );
 PHPEOF
 
-  info_step "installing WordPress"
-  wp core install --path="$dir" --url="$url" --title="$site" \
-     --admin_user="$ADMIN_USER" --admin_password="$adminpass" --admin_email="$ADMIN_EMAIL" \
-     --skip-email --quiet
+    info_step "installing WordPress"
+    wp core install --path="$dir" --url="$url" --title="$site" \
+       --admin_user="$ADMIN_USER" --admin_password="$adminpass" --admin_email="$ADMIN_EMAIL" \
+       --skip-email --quiet
+    wp option update blogdescription "Local development site" --path="$dir" --quiet 2>/dev/null || true
+    wp rewrite structure '/%postname%/' --path="$dir" --quiet 2>/dev/null || true
+    ;;
 
-  wp option update blogdescription "Local development site" --path="$dir" --quiet 2>/dev/null || true
-  wp rewrite structure '/%postname%/' --path="$dir" --quiet 2>/dev/null || true
+  laravel)
+    info_step "composer create-project laravel/laravel (this takes a minute)"
+    rmdir "$dir" 2>/dev/null || true   # composer wants to create it itself
+    composer create-project laravel/laravel "$dir" --quiet --no-interaction
+
+    info_step ".env"
+    # Laravel ships APP_URL and a sqlite default; point both at this stack.
+    /usr/bin/sed -i '' \
+      -e "s|^APP_URL=.*|APP_URL=$url|" \
+      -e "s|^APP_NAME=.*|APP_NAME=$site|" \
+      -e "s|^DB_CONNECTION=.*|DB_CONNECTION=mysql|" \
+      -e "s|^# *DB_HOST=.*|DB_HOST=127.0.0.1|" \
+      -e "s|^# *DB_PORT=.*|DB_PORT=3306|" \
+      -e "s|^# *DB_DATABASE=.*|DB_DATABASE=$db|" \
+      -e "s|^# *DB_USERNAME=.*|DB_USERNAME=$dbuser|" \
+      -e "s|^# *DB_PASSWORD=.*|DB_PASSWORD=$dbpass|" \
+      -e "s|^DB_DATABASE=.*|DB_DATABASE=$db|" \
+      -e "s|^DB_USERNAME=.*|DB_USERNAME=$dbuser|" \
+      -e "s|^DB_PASSWORD=.*|DB_PASSWORD=$dbpass|" \
+      "$dir/.env"
+
+    info_step "migrations"
+    (cd "$dir" && php artisan migrate --force --quiet 2>/dev/null) \
+      && ok "migrations ran" || warn "migrations failed — run: cd $dir && php artisan migrate"
+    ;;
+
+  plain)
+    info_step "scaffolding"
+    mkdir -p "$dir/public"
+    cat > "$dir/public/index.php" <<PHPEOF
+<?php
+// $site — local development
+echo "<h1>$site</h1>";
+echo "<p>PHP " . PHP_VERSION . "</p>";
+PHPEOF
+    cat > "$dir/README.md" <<MDEOF
+# $site
+
+Served at $url from \`public/\`.
+
+Database: \`$db\` (user \`$dbuser\`) — credentials are in this file only, so
+move them somewhere your app reads before committing anything.
+
+    DB_HOST=127.0.0.1
+    DB_PORT=3306
+    DB_DATABASE=$db
+    DB_USERNAME=$dbuser
+    DB_PASSWORD=$dbpass
+MDEOF
+    ;;
+  esac
 
   info_step "certificate"
   SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
     && ok "certificate now covers $site.$TLD" || warn "certificate regeneration failed — run site-cert-regen"
 
   echo
-  ok "$site created"
-  cat <<EOF
-
-  URL       $url
-  Admin     $url/wp-admin
-  Username  $ADMIN_USER
-  Password  $adminpass
-
-  Database  $db   (user $dbuser)
-
-  This password is shown once. Change it in Users → Profile, or:
-    wp user update $ADMIN_USER --user_pass='new-password' --path=$dir
-
-EOF
+  ok "$site created ($type)"
+  echo
+  echo "  URL       $url"
+  if [[ "$type" == "wordpress" ]]; then
+    echo "  Admin     $url/wp-admin"
+    echo "  Username  $ADMIN_USER"
+    echo "  Password  $adminpass"
+  fi
+  echo "  Database  $db   (user $dbuser)"
+  echo
+  case "$type" in
+    wordpress) echo "  The admin password is shown once. Change it in Users → Profile, or:"
+               echo "    wp user update $ADMIN_USER --user_pass='new-password' --path=$dir" ;;
+    laravel)   echo "  Credentials are already written to $dir/.env" ;;
+    plain)     echo "  Credentials are in $dir/README.md — move them into your app's config." ;;
+  esac
+  echo
   warn "Reload nginx so the new certificate is served:  sudo nginx -s reload"
 }
 
@@ -395,8 +484,8 @@ site_kind() {  # site_kind <dir> -> human label
   elif [[ -f "$d/artisan" ]]; then echo "Laravel"
   elif [[ -f "$d/bin/console" ]]; then echo "Symfony"
   elif [[ -f "$d/composer.json" ]]; then echo "PHP (composer)"
-  elif [[ -f "$d/index.php" ]]; then echo "PHP"
-  elif [[ -f "$d/index.html" ]]; then echo "static"
+  elif [[ -f "$d/index.php" || -f "$d/public/index.php" ]]; then echo "PHP"
+  elif [[ -f "$d/index.html" || -f "$d/public/index.html" ]]; then echo "static"
   else echo "-"; fi
 }
 
@@ -453,10 +542,14 @@ cmd_rm() {
   local dir="$SITES_DIR/$site"
   [[ -e "$dir" ]] || { bad "No such site: $dir"; exit 1; }
 
-  local db="wp_${site//-/_}" dbuser
-  db="${db:0:64}"; dbuser="${db:0:32}"
-  local db_exists=0
-  mysql_root -N -e "SHOW DATABASES LIKE '$db'" 2>/dev/null | grep -q . && db_exists=1
+  local db="" dbuser db_exists=0 cand
+  while IFS= read -r cand; do
+    if mysql_root -N -e "SHOW DATABASES LIKE '$cand'" 2>/dev/null | grep -q .; then
+      db="$cand"; db_exists=1; break
+    fi
+  done < <(site_db_candidates "$site")
+  [[ -z "$db" ]] && db="$(site_db_name "$site")"
+  dbuser="${db:0:32}"
 
   echo "About to remove:"
   [[ "$keep_files" == "0" ]] && echo "  files     $dir  ($(du -sh "$dir" 2>/dev/null | cut -f1))" \
@@ -537,7 +630,7 @@ EOF
 
 case "${1:-}" in
   config) shift; cmd_config "${1:-}" ;;
-  new)    shift; cmd_new "${1:-}" ;;
+  new)    shift; cmd_new "$@" ;;
   list)   cmd_list ;;
   adminer) cmd_adminer ;;
   rm)     shift; cmd_rm "$@" ;;
