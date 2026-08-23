@@ -22,24 +22,30 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
 usage() {
-  cat <<EOF
-Usage: devstack <command>
+  cat <<'EOF'
+Usage: devstack <command> [options]
 
-  config     one-time setup: your name, email and admin username
-  new <name> [--type=wordpress|laravel|plain]
-             create a site: database, scaffolding, certificate
-  list       every site, its type, git repo and URL
-  adminer    install/update Adminer (MySQL + PostgreSQL + SQLite web UI)
-  rm <name>  delete a site and its database (asks you to confirm by name)
-  status     show what is running and whether the stack answers
-  php [ver]  show the active PHP version, or switch to it (e.g. devstack php 8.4)
-  mysql-perf [on|off]
-             show or toggle MySQL performance_schema (~200 MB when ON)
-  start      start php-fpm, dnsmasq, nginx (the last two need sudo)
-  stop       stop them
-  reload     regenerate the certificate and reload nginx
-  logs       tail the nginx error log
-  doctor     diagnose the usual failure modes
+Sites
+  new <name> [--type=wordpress|laravel|plain]  create site, database, certificate
+  list                                         all sites: type, repo, URL
+  rm <name> [--keep-db] [--keep-files]         delete site and database
+
+Stack
+  status                    what is running and listening
+  doctor                    diagnose why something is not working
+  start | stop              start or stop the stack (nginx, dnsmasq need sudo)
+  reload                    regenerate certificate, reload nginx
+  logs                      tail the nginx error log
+
+Configure
+  config [--show]           your name, email, admin username
+  php [version]             show or switch the PHP version
+  mysql perf [on|off]       performance_schema (~200 MB when ON)
+  install adminer           web UI for MySQL, PostgreSQL and SQLite
+
+  help, --version
+
+Settings live in ~/.config/brew-dev-stack/config; environment variables override.
 EOF
 }
 
@@ -218,7 +224,7 @@ cmd_mysql_perf() {
     fi
     echo
     echo "  ON  costs roughly 200 MB of pre-allocated memory, whether or not you query it."
-    echo "  Toggle with:  devstack mysql-perf on|off"
+    echo "  Toggle with:  devstack mysql perf on|off"
     return 0
   fi
 
@@ -236,7 +242,7 @@ cmd_mysql_perf() {
       /usr/bin/sed -i '' 's|^\s*performance_schema\s*=\s*OFF.*|# performance_schema    = OFF  (enabled)|' "$cnf"
       ok "performance_schema enabled (MySQL default)"
       ;;
-    *) bad "Use: devstack mysql-perf on|off"; exit 1 ;;
+    *) bad "Use: devstack mysql perf on|off"; exit 1 ;;
   esac
 
   echo "Restarting MySQL…"
@@ -628,19 +634,43 @@ EOF
   warn "Reload nginx:  sudo nginx -s reload"
 }
 
+VERSION="0.1.0"
+
+cmd_mysql() {
+  case "${1:-}" in
+    perf) shift; cmd_mysql_perf "${1:-}" ;;
+    "")   bad "Usage: devstack mysql perf [on|off]"; exit 1 ;;
+    *)    bad "Unknown mysql subcommand: $1"; exit 1 ;;
+  esac
+}
+
+cmd_install() {
+  case "${1:-}" in
+    adminer) cmd_adminer ;;
+    "")      bad "Usage: devstack install adminer"; exit 1 ;;
+    *)       bad "Nothing to install called '$1'. Available: adminer"; exit 1 ;;
+  esac
+}
+
 case "${1:-}" in
-  config) shift; cmd_config "${1:-}" ;;
-  new)    shift; cmd_new "$@" ;;
-  list)   cmd_list ;;
-  adminer) cmd_adminer ;;
-  rm)     shift; cmd_rm "$@" ;;
-  status) cmd_status ;;
-  php)    shift; cmd_php "${1:-}" ;;
-  mysql-perf) shift; cmd_mysql_perf "${1:-}" ;;
-  start)  cmd_start ;;
-  stop)   cmd_stop ;;
-  reload) cmd_reload ;;
-  logs)   cmd_logs ;;
-  doctor) cmd_doctor ;;
-  *) usage; exit 1 ;;
+  new)     shift; cmd_new "$@" ;;
+  list)    cmd_list ;;
+  rm)      shift; cmd_rm "$@" ;;
+  status)  cmd_status ;;
+  doctor)  cmd_doctor ;;
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  reload)  cmd_reload ;;
+  logs)    cmd_logs ;;
+  config)  shift; cmd_config "${1:-}" ;;
+  php)     shift; cmd_php "${1:-}" ;;
+  mysql)   shift; cmd_mysql "$@" ;;
+  install) shift; cmd_install "$@" ;;
+  help|-h|--help) usage ;;
+  --version|-V) echo "devstack $VERSION" ;;
+  "")      usage; exit 1 ;;
+  # Renamed in 0.1.0; tell people rather than printing generic usage.
+  mysql-perf) bad "Renamed:  devstack mysql perf ${2:-[on|off]}"; exit 1 ;;
+  adminer)    bad "Renamed:  devstack install adminer"; exit 1 ;;
+  *)       bad "Unknown command: $1"; echo; usage; exit 1 ;;
 esac

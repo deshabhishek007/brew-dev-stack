@@ -200,9 +200,9 @@ if [[ "$WITH_ADMINER" == "1" ]]; then
   if is_dry; then
     dry "download Adminer to $SITES_DIR/adminer/index.php"
   else
-    "$SCRIPT_DIR/bin/devstack" adminer >/dev/null 2>&1 \
+    "$SCRIPT_DIR/bin/devstack" install adminer >/dev/null 2>&1 \
       && ok "adminer → https://adminer.$TLD" \
-      || warn "adminer install failed — run: bin/devstack adminer"
+      || warn "adminer install failed — run: bin/devstack install adminer"
   fi
 fi
 

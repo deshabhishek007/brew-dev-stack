@@ -129,7 +129,7 @@ that drops a database.
 ## Database administration
 
 ```bash
-bin/devstack adminer
+bin/devstack install adminer
 ```
 
 Installs [Adminer](https://www.adminer.org/) at `https://adminer.test` — a single PHP
@@ -161,11 +161,16 @@ available" — a confusing failure, because nothing errored at install time.
 ## Daily use
 
 ```bash
+bin/devstack help       # grouped command reference
 bin/devstack status     # what is running, what is listening
-bin/devstack doctor     # diagnose the usual failure modes
+bin/devstack doctor     # diagnose why something is not working
 bin/devstack reload     # regenerate the certificate + reload nginx
 bin/devstack logs       # tail the error log
 ```
+
+`status` is an inventory — services, listeners, socket, site count. `doctor` is a
+diagnosis — it checks the things that actually break (resolver file, dnsmasq answering,
+CA trust, certificate shape, php-fpm log ownership) and tells you what to do about each.
 
 ### Switching PHP version
 
@@ -183,9 +188,9 @@ afterwards, as the command reminds you.
 ### MySQL performance_schema
 
 ```bash
-bin/devstack mysql-perf         # show configured + running state and current memory
-bin/devstack mysql-perf off     # ~200 MB back
-bin/devstack mysql-perf on      # when you need query analysis
+bin/devstack mysql perf         # show configured + running state and current memory
+bin/devstack mysql perf off     # ~200 MB back
+bin/devstack mysql perf on      # when you need query analysis
 ```
 
 Toggling restarts MySQL and waits for the socket to actually accept connections —
