@@ -75,6 +75,21 @@ $sites = array_values(array_filter($all, fn($s) => $s['type'] !== '-' && $s['url
 usort($sites, fn($a, $b) => $b['modified'] <=> $a['modified']);
 $problems = array_values(array_filter($checks, fn($c) => $c['status'] !== 'pass'));
 
+// A forgotten tunnel leaves the machine reachable from the internet, so this
+// is worth stating loudly rather than leaving it to be noticed.
+$tunnel = null;
+// The bracket keeps pgrep from matching the shell running this very command,
+// whose argv contains the pattern.
+$cf = trim(shell_exec("pgrep -f '[c]loudflared tunnel' 2>/dev/null") ?: '');
+if ($cf !== '') {
+    $target = @file_get_contents("$BREW/etc/nginx/tunnel-target.conf") ?: '';
+    if (preg_match('~set \$t_root "([^"]+)"~', $target, $m) && !str_contains($m[1], '/var/empty')) {
+        $tunnel = basename(rtrim(str_replace('/public', '', $m[1]), '/'));
+    } else {
+        $tunnel = '(target not set)';
+    }
+}
+
 $name  = trim(explode(' ', config_value('ADMIN_NAME'))[0] ?? '');
 $hour  = (int) date('G');
 $greet = $hour < 5 ? 'Still up' : ($hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening'));
@@ -93,6 +108,7 @@ $layers = [
     ['TLS',      'mkcert',                 'One cert, one SAN per site',  "$BREW/etc/nginx/certs/local-$tld.pem"],
     ['Database', 'mysql · postgresql',     'Tuned for a laptop',          "$BREW/etc/my.cnf"],
     ['Mail',     'mailpit',                'sendmail_path is redirected', "$BREW/etc/php/*/conf.d/zz-mailpit.ini"],
+    ['Tunnel',   'cloudflared',            'On demand, for webhooks',     "$BREW/etc/nginx/servers/zz-tunnel.conf"],
 ];
 ?>
 <!doctype html>
@@ -148,6 +164,10 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 .note{padding:13px 15px;border-bottom:1px solid var(--line);font-size:13.5px;color:var(--dim)}
 .note:last-child{border-bottom:0}
 .note b{color:var(--fg);font-weight:600;display:block;margin-bottom:2px;font-size:13.5px}
+.tunnel{margin:18px 0 0;padding:12px 15px;border-radius:9px;font-size:13.5px;
+  border:1px solid color-mix(in srgb,var(--warn) 50%,var(--line));background:var(--panel)}
+.tunnel b{display:block;color:var(--warn);font-weight:600;margin-bottom:2px}
+.tunnel span{color:var(--dim)}
 .hidden{display:none}
 @media(max-width:620px){table.arch td:last-child{display:none}}
 </style>
@@ -164,6 +184,13 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
     <ul class="issues">
       <?php foreach ($problems as $p): ?><li class="<?= e($p['status']) ?>"><?= e($p['message']) ?></li><?php endforeach; ?>
     </ul>
+  <?php endif; ?>
+
+  <?php if ($tunnel !== null): ?>
+    <div class="tunnel">
+      <b>A public tunnel is open</b>
+      <span><?= e($tunnel) ?> is reachable from the internet right now. Close it with ctrl-c in the terminal running <code>devstack tunnel</code>.</span>
+    </div>
   <?php endif; ?>
 
   <h2>Tools</h2>
@@ -232,6 +259,13 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
     <div class="note"><b>PHP can differ per site</b>
       nginx picks the php-fpm socket from a map keyed on the hostname, so versions run side by side.
       <code>devstack php 8.2 --site=legacy</code> pins one; the default serves the rest.</div>
+
+    <div class="note"><b>Tunnels expose one site, briefly</b>
+      <code>devstack tunnel &lt;name&gt;</code> opens a Cloudflare quick tunnel — a random
+      trycloudflare.com address, no account, gone when you press ctrl-c. nginx rewrites the local
+      hostname out of every response, so a WordPress site does not serve asset URLs the visitor
+      cannot reach, and your database is never touched. Only the site you name is exposed; anyone
+      with the URL can reach it, so do not tunnel anything private.</div>
 
     <div class="note"><b>This page changes nothing</b>
       Any page your browser loads can reach 127.0.0.1, so a panel that could delete a site would be
