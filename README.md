@@ -263,6 +263,27 @@ PHP gzips its own output the substitution quietly does nothing. The vhost also s
 `HTTPS on`, since Cloudflare terminates TLS and forwards plain HTTP — without it the app
 emits `http://` assets onto an `https` page and browsers block them.
 
+## Machine-readable output
+
+```bash
+bin/devstack list --json
+bin/devstack doctor --json
+```
+
+```json
+[
+  { "name": "climaone", "type": "PHP (composer)", "docroot": "public",
+    "repo": "you/climaone-amc", "url": "https://climaone.test",
+    "path": "/Users/you/sites/climaone", "symlink": false }
+]
+```
+
+`doctor --json` returns `{status, message}` per check, where status is `pass`, `warn`
+or `fail` — so a script can act on the result rather than parse a table.
+
+Encoding goes through PHP's `json_encode` rather than string-building in shell, because
+hand-rolled JSON gets escaping wrong the first time a site name contains a quote.
+
 ## Daily use
 
 ```bash

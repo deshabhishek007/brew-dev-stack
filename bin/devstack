@@ -34,7 +34,7 @@ Usage: devstack <command> [options]
 
 Sites
   new <name> [--type=wordpress|laravel|plain]  create site, database, certificate
-  list                                         all sites: type, repo, URL
+  list [--json]                                all sites: type, repo, URL
   rm <name> [--keep-db] [--keep-files]         delete site and database
   tunnel <name>                                expose a site publicly for webhook testing
   queue <name> [on|off]                        Laravel queue:work as a managed worker
@@ -42,7 +42,7 @@ Sites
 
 Stack
   status                    what is running and listening
-  doctor                    diagnose why something is not working
+  doctor [--json]           diagnose why something is not working
   start | stop              start or stop the stack (nginx, dnsmasq need sudo)
   reload                    regenerate certificate, reload nginx
   logs [nginx|access|php|fpm|all|<site>]
@@ -141,7 +141,16 @@ cmd_logs() {
 }
 
 cmd_doctor() {
-  echo "Checks"
+  # In JSON mode ok/bad/warn append a row instead of printing.
+  local drows=""
+  if (( JSON )); then
+    drows="$(mktemp)"
+    ok()   { printf 'pass%s%s\n' "$SEP" "$*" >> "$drows"; }
+    bad()  { printf 'fail%s%s\n' "$SEP" "$*" >> "$drows"; }
+    warn() { printf 'warn%s%s\n' "$SEP" "$*" >> "$drows"; }
+  else
+    echo "Checks"
+  fi
   [[ -f "/etc/resolver/$TLD" ]] && ok "/etc/resolver/$TLD present" \
     || bad "/etc/resolver/$TLD missing — .$TLD will not resolve"
 
@@ -189,6 +198,12 @@ cmd_doctor() {
   else
     bad "php mail() goes to $sp — a local site could email a real address"
     echo "       install a catcher with:  devstack install mailpit"
+  fi
+
+  if (( JSON )); then
+    json_rows_to_array 'status,message' < "$drows"
+    rm -f "$drows"
+    return 0
   fi
 
   # php-fpm reads php.ini at start; a stale worker keeps the old sendmail_path.
@@ -678,25 +693,40 @@ site_repo() {  # site_repo <dir> -> owner/name, or "-"
 }
 
 cmd_list() {
-  local n=0 served=0
-  printf '  %-24s %-15s %-8s %-28s %s\n' "SITE" "TYPE" "DOCROOT" "REPO" "URL"
-  printf '  %-24s %-15s %-8s %-28s %s\n' "----" "----" "-------" "----" "---"
+  local rows; rows="$(mktemp)"
+  local n=0 served=0 d name kind repo docroot url link
   for d in "$SITES_DIR"/*/; do
     [[ -d "$d" ]] || continue
-    local name kind repo docroot url mark
     name="$(basename "$d")"
     kind="$(site_kind "${d%/}")"
     repo="$(site_repo "${d%/}")"
-    docroot="root"; [[ -d "${d%/}/public" ]] && docroot="public/"
+    docroot="root"; [[ -d "${d%/}/public" ]] && docroot="public"
+    link="false"; [[ -L "${d%/}" ]] && link="true"
     n=$((n+1))
     if grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$' <<<"$name"; then
       url="https://$name.$TLD"; served=$((served+1))
     else
-      url="(name not a valid hostname — not served)"
+      url=""
     fi
-    mark=""; [[ -L "${d%/}" ]] && mark=" →link"
-    printf '  %-24s %-15s %-8s %-28s %s%s\n' "${name:0:24}" "$kind" "$docroot" "${repo:0:28}" "$url" "$mark"
+    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+      "$name" "$SEP" "$kind" "$SEP" "$docroot" "$SEP" "$repo" "$SEP" \
+      "$url" "$SEP" "${d%/}" "$SEP" "$link" >> "$rows"
   done
+
+  if (( JSON )); then
+    json_rows_to_array 'name,type,docroot,repo,url,path,symlink' < "$rows"
+    rm -f "$rows"; return 0
+  fi
+
+  printf '  %-24s %-15s %-8s %-28s %s\n' "SITE" "TYPE" "DOCROOT" "REPO" "URL"
+  printf '  %-24s %-15s %-8s %-28s %s\n' "----" "----" "-------" "----" "---"
+  while IFS="$SEP" read -r name kind docroot repo url path link; do
+    local mark=""; [[ "$link" == "true" ]] && mark=" →link"
+    local shown="$url"; [[ -z "$url" ]] && shown="(name not a valid hostname — not served)"
+    local dr="root"; [[ "$docroot" == "public" ]] && dr="public/"
+    printf '  %-24s %-15s %-8s %-28s %s%s\n' "${name:0:24}" "$kind" "$dr" "${repo:0:28}" "$shown" "$mark"
+  done < "$rows"
+  rm -f "$rows"
   echo
   echo "  $n directories, $served served"
 }
@@ -1207,10 +1237,58 @@ worker_toggle() {  # <kind> <site> <on|off>
   esac
 }
 
+# --- json output -----------------------------------------------------------
+# Hand-rolled JSON in shell gets escaping wrong sooner or later, and PHP is
+# guaranteed present here. Collect rows as tab-separated fields, then convert
+# once — a single process regardless of how many rows.
+JSON=0
+# Tab is IFS whitespace, so `IFS=$'\t' read` collapses consecutive tabs and
+# silently drops empty fields, shifting every later column. ASCII Unit
+# Separator is not whitespace, so empty fields survive.
+SEP=$'\x1f'
+
+json_rows_to_array() {  # json_rows_to_array <field,field,...> < rows.tsv
+  php -r '
+    $fields = explode(",", $argv[1]);
+    $out = [];
+    while (($line = fgets(STDIN)) !== false) {
+      $line = rtrim($line, "\n");
+      if ($line === "") continue;
+      $vals = explode("\x1f", $line);
+      $row = [];
+      foreach ($fields as $i => $f) {
+        $v = $vals[$i] ?? "";
+        if ($v === "true" || $v === "false") { $row[$f] = ($v === "true"); }
+        elseif ($v !== "" && ctype_digit($v))  { $row[$f] = (int) $v; }
+        else                                   { $row[$f] = $v; }
+      }
+      $out[] = $row;
+    }
+    echo json_encode($out, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), "\n";
+  ' -- "$1"
+}
+
+json_object() {  # json_object key value key value …
+  php -r '
+    $a = array_slice($argv, 1);
+    $o = [];
+    for ($i = 0; $i < count($a); $i += 2) {
+      $k = $a[$i]; $v = $a[$i + 1] ?? "";
+      if ($v === "true" || $v === "false") { $o[$k] = ($v === "true"); }
+      elseif ($v !== "" && ctype_digit($v))  { $o[$k] = (int) $v; }
+      elseif (str_starts_with($v, "[") || str_starts_with($v, "{")) {
+        $d = json_decode($v, true);
+        $o[$k] = $d === null ? $v : $d;      // already-encoded fragment
+      } else { $o[$k] = $v; }
+    }
+    echo json_encode($o, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), "\n";
+  ' -- "$@"
+}
+
 VERSION="0.1.0"
 
 cmd_mysql() {
-  case "${1:-}" in
+case "${1:-}" in
     perf) shift; cmd_mysql_perf "${1:-}" ;;
     "")   bad "Usage: devstack mysql perf [on|off]"; exit 1 ;;
     *)    bad "Unknown mysql subcommand: $1"; exit 1 ;;
@@ -1227,6 +1305,17 @@ cmd_install() {
     *)       bad "Nothing to install called '$1'. Available: adminer, mailpit, xdebug, redis"; exit 1 ;;
   esac
 }
+
+# --json is global: accept it anywhere in the arguments and strip it before
+# the command sees them.
+_args=()
+for _a in "$@"; do
+  case "$_a" in
+    --json) JSON=1 ;;
+    *) _args+=("$_a") ;;
+  esac
+done
+set -- "${_args[@]+"${_args[@]}"}"
 
 case "${1:-}" in
   new)     shift; cmd_new "$@" ;;
