@@ -36,6 +36,9 @@ Sites
   new <name> [--type=wordpress|laravel|plain]  create site, database, certificate
   list                                         all sites: type, repo, URL
   rm <name> [--keep-db] [--keep-files]         delete site and database
+  tunnel <name>                                expose a site publicly for webhook testing
+  queue <name> [on|off]                        Laravel queue:work as a managed worker
+  schedule <name> [on|off]                     Laravel schedule:run every minute
 
 Stack
   status                    what is running and listening
@@ -53,6 +56,7 @@ Configure
   install adminer           web UI for MySQL, PostgreSQL and SQLite
   install mailpit           catch all outgoing mail (nothing reaches real inboxes)
   install xdebug            step debugger and profiler (dormant until triggered)
+  install redis             cache, sessions and queues, with the PHP extension
 
   help, --version
 
@@ -938,6 +942,191 @@ EOF
   warn "Xdebug is built per PHP version — re-run this after 'devstack php <ver>'"
 }
 
+# --- redis -----------------------------------------------------------------
+cmd_install_redis() {
+  brew list --versions redis >/dev/null 2>&1 || { echo "Installing redis…"; brew install redis >/dev/null; }
+  ok "redis $(brew list --versions redis | awk '{print $2}')"
+
+  # Brew's redis.conf already binds to 127.0.0.1, but make it explicit — this
+  # holds sessions and cache for every local site.
+  local rconf="$BREW/etc/redis.conf"
+  if [[ -f "$rconf" ]] && ! grep -qE '^bind 127\.0\.0\.1' "$rconf"; then
+    cp "$rconf" "$rconf.bak-$(date +%Y%m%d%H%M%S)"
+    /usr/bin/sed -i '' -e 's|^bind .*|bind 127.0.0.1 ::1|' "$rconf"
+    ok "bound to 127.0.0.1"
+  fi
+
+  brew services restart redis >/dev/null 2>&1
+  local i
+  for i in $(seq 1 20); do redis-cli ping >/dev/null 2>&1 && break; sleep 1; done
+  if [[ "$(redis-cli ping 2>/dev/null)" == "PONG" ]]; then
+    ok "redis responding on 127.0.0.1:6379"
+  else
+    bad "redis did not come up — see $BREW/var/log/redis.log"; return 1
+  fi
+
+  # PHP needs the phpredis extension to talk to it. Laravel can fall back to
+  # the pure-PHP predis package, but WordPress object-cache plugins require this.
+  local extdir; extdir="$(php -i 2>/dev/null | sed -nE 's/^extension_dir => ([^ ]+) .*/\1/p' | head -1)"
+  if [[ -f "$extdir/redis.so" ]]; then
+    ok "phpredis already built for PHP $PHP_VERSION"
+  else
+    command -v pecl >/dev/null || { warn "pecl not found — skipping the PHP extension"; return 0; }
+    echo "Compiling phpredis for PHP $PHP_VERSION…"
+    # phpredis asks about optional deps; answer with defaults.
+    printf 'no\nno\nno\nno\n' | pecl install redis >/dev/null 2>&1 || pecl install --force redis >/dev/null 2>&1
+    [[ -f "$extdir/redis.so" ]] || { warn "phpredis build failed — run 'pecl install redis' to see why"; return 0; }
+    ok "built $extdir/redis.so"
+  fi
+
+  # pecl appends extension=redis.so to php.ini; own it in conf.d instead.
+  local phpini="$BREW/etc/php/$PHP_VERSION/php.ini"
+  grep -qE '^\s*extension\s*=\s*"?redis' "$phpini" 2>/dev/null && \
+    /usr/bin/sed -i '' -E '/^[[:space:]]*extension[[:space:]]*=[[:space:]]*"?redis/d' "$phpini"
+  printf 'extension = "%s/redis.so"\n' "$extdir" > "$BREW/etc/php/$PHP_VERSION/conf.d/zz-redis.ini"
+  brew services restart "php@$PHP_VERSION" >/dev/null 2>&1
+  for i in $(seq 1 15); do grep -qi '^redis$' <<<"$(out_of php -m)" && break; sleep 1; done
+  grep -qi '^redis$' <<<"$(out_of php -m)" \
+    && ok "php redis extension loaded" || warn "php redis extension did not load"
+
+  cat <<EOF
+
+  Laravel .env:
+    REDIS_HOST=127.0.0.1
+    REDIS_PORT=6379
+    CACHE_STORE=redis   SESSION_DRIVER=redis   QUEUE_CONNECTION=redis
+
+  WordPress: install a Redis object cache plugin; defaults (127.0.0.1:6379) work.
+  Use a different database number per site to keep them apart: REDIS_DB=0,1,2…
+
+EOF
+}
+
+# --- public tunnel ---------------------------------------------------------
+cmd_tunnel() {
+  local site="${1:-}"
+  [[ -n "$site" ]] || { bad "Usage: devstack tunnel <sitename>"; exit 1; }
+  [[ -d "$SITES_DIR/$site" ]] || { bad "No such site: $site"; exit 1; }
+
+  command -v cloudflared >/dev/null || { echo "Installing cloudflared…"; brew install cloudflared >/dev/null; }
+
+  local url="http://$site.$TLD"
+  # Reach nginx over plain HTTP: the local certificate is not publicly trusted,
+  # and TLS is terminated by Cloudflare at the public end anyway.
+  # --http-host-header is required, otherwise cloudflared forwards the public
+  # trycloudflare hostname and the wildcard vhost will not match any site.
+  cat <<EOF
+
+  Opening a public tunnel to $url
+
+  \033[33mThis makes the site reachable from the internet by anyone with the URL.\033[0m
+  It is a quick tunnel: a random trycloudflare.com address, no account needed,
+  and it disappears when you press ctrl-c.
+
+  Local sites often run with no credentials. Do not tunnel a site holding
+  anything you would not publish.
+
+EOF
+  printf '  Press ctrl-c to close the tunnel.\n\n'
+  exec cloudflared tunnel --url "$url" --http-host-header "$site.$TLD" --no-autoupdate
+}
+
+# --- laravel workers -------------------------------------------------------
+worker_label() { printf 'dev.brewdevstack.%s.%s' "$2" "$1"; }   # <kind> <site>
+
+worker_plist() {  # <kind> <site> <args...>
+  local kind="$1" site="$2"; shift 2
+  local label; label="$(worker_label "$kind" "$site")"
+  local dir="$SITES_DIR/$site"
+  local file="$HOME/Library/LaunchAgents/$label.plist"
+  local php_bin="$BREW/opt/php@$PHP_VERSION/bin/php"
+  # Honour a per-site PHP pin so the worker runs the same version as the web.
+  local pinned
+  pinned="$(sed -nE "s|^[[:space:]]*${site}[[:space:]]+.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p" "$PHPMAP" 2>/dev/null | head -1)"
+  [[ -n "$pinned" ]] && php_bin="$BREW/opt/php@$pinned/bin/php"
+
+  local extra=""
+  local a
+  for a in "$@"; do extra+="    <string>$a</string>"$'\n'; done
+
+  local interval=""
+  [[ "$kind" == "schedule" ]] && interval="  <key>StartInterval</key><integer>60</integer>"
+  local keepalive="  <key>KeepAlive</key><true/>"
+  [[ "$kind" == "schedule" ]] && keepalive="  <key>KeepAlive</key><false/>"
+
+  cat > "$file" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$php_bin</string>
+    <string>artisan</string>
+$extra  </array>
+  <key>WorkingDirectory</key><string>$dir</string>
+  <key>RunAtLoad</key><true/>
+$keepalive
+$interval
+  <key>StandardOutPath</key><string>$dir/storage/logs/devstack-$kind.log</string>
+  <key>StandardErrorPath</key><string>$dir/storage/logs/devstack-$kind.log</string>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+EOF
+  printf '%s' "$file"
+}
+
+worker_toggle() {  # <kind> <site> <on|off>
+  local kind="$1" site="$2" action="${3:-}"
+  local label; label="$(worker_label "$kind" "$site")"
+  local file="$HOME/Library/LaunchAgents/$label.plist"
+
+  [[ -d "$SITES_DIR/$site" ]] || { bad "No such site: $site"; exit 1; }
+  [[ -f "$SITES_DIR/$site/artisan" ]] || { bad "$site is not a Laravel project (no artisan)"; exit 1; }
+
+  if [[ -z "$action" ]]; then
+    if grep -q "$label" <<<"$(out_of launchctl list)"; then
+      ok "$kind worker running for $site"
+      echo "  log: $SITES_DIR/$site/storage/logs/devstack-$kind.log"
+    else
+      warn "$kind worker not running for $site"
+      echo "  start it:  devstack $kind $site on"
+    fi
+    return 0
+  fi
+
+  case "$action" in
+    on)
+      mkdir -p "$SITES_DIR/$site/storage/logs"
+      if [[ "$kind" == "queue" ]]; then
+        # --max-time recycles the worker hourly so code changes are picked up;
+        # a long-lived queue worker otherwise runs stale code indefinitely.
+        worker_plist queue "$site" queue:work --tries=3 --max-time=3600 >/dev/null
+      else
+        worker_plist schedule "$site" schedule:run >/dev/null
+      fi
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+      local i
+      for i in $(seq 1 10); do grep -q "$label" <<<"$(out_of launchctl list)" || break; sleep 1; done
+      launchctl enable "gui/$(id -u)/$label" 2>/dev/null || true
+      for i in 1 2 3; do launchctl bootstrap "gui/$(id -u)" "$file" 2>/dev/null && break; sleep 2; done
+      sleep 2
+      grep -q "$label" <<<"$(out_of launchctl list)" \
+        && ok "$kind worker started for $site" \
+        || { bad "failed to start — see $SITES_DIR/$site/storage/logs/devstack-$kind.log"; return 1; }
+      ;;
+    off)
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+      rm -f "$file"
+      ok "$kind worker stopped for $site"
+      ;;
+    *) bad "Use: devstack $kind $site on|off"; exit 1 ;;
+  esac
+}
+
 VERSION="0.1.0"
 
 cmd_mysql() {
@@ -953,8 +1142,9 @@ cmd_install() {
     adminer) cmd_adminer ;;
     mailpit) cmd_install_mailpit ;;
     xdebug)  cmd_install_xdebug ;;
-    "")      bad "Usage: devstack install <adminer|mailpit|xdebug>"; exit 1 ;;
-    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit, xdebug"; exit 1 ;;
+    redis)   cmd_install_redis ;;
+    "")      bad "Usage: devstack install <adminer|mailpit|xdebug|redis>"; exit 1 ;;
+    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit, xdebug, redis"; exit 1 ;;
   esac
 }
 
@@ -962,6 +1152,9 @@ case "${1:-}" in
   new)     shift; cmd_new "$@" ;;
   list)    cmd_list ;;
   rm)      shift; cmd_rm "$@" ;;
+  tunnel)  shift; cmd_tunnel "${1:-}" ;;
+  queue)   shift; worker_toggle queue "${1:-}" "${2:-}" ;;
+  schedule) shift; worker_toggle schedule "${1:-}" "${2:-}" ;;
   status)  cmd_status ;;
   doctor)  cmd_doctor ;;
   start)   cmd_start ;;

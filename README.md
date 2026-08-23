@@ -205,6 +205,46 @@ so when it finishes.
 New sites also get `WP_DEBUG` / `WP_DEBUG_LOG` (WordPress) and `.env` debug defaults
 (Laravel), and PHP errors are written to `$(brew --prefix)/var/log/php-error.log`.
 
+## Redis
+
+```bash
+bin/devstack install redis
+```
+
+Installs Redis, binds it to 127.0.0.1, and builds the **phpredis** extension — Laravel
+can fall back to the pure-PHP `predis` package, but WordPress object-cache plugins need
+the extension. Use a different `REDIS_DB` per site to keep them apart.
+
+## Laravel workers
+
+```bash
+bin/devstack queue myapp on        # queue:work as a managed agent
+bin/devstack schedule myapp on     # schedule:run every minute
+bin/devstack queue myapp           # status
+```
+
+Both run under launchd, survive logout, and log to the site's own
+`storage/logs/devstack-{queue,schedule}.log`. The queue worker uses `--max-time=3600`
+so it recycles hourly — a long-lived worker otherwise keeps running stale code after
+you edit a job. Workers honour a per-site PHP pin, so they run the same version as the
+web requests.
+
+## Public tunnels for webhooks
+
+```bash
+bin/devstack tunnel myapp
+```
+
+Opens a Cloudflare quick tunnel — a random `trycloudflare.com` URL, no account needed,
+gone when you press ctrl-c. This is how you test Stripe, Twilio or GitHub callbacks
+against a local site.
+
+`--http-host-header` is set so the wildcard vhost still matches; without it cloudflared
+forwards the public hostname and nothing resolves.
+
+**This makes the site reachable by anyone with the URL.** Local sites often run with no
+credentials — do not tunnel one holding anything you would not publish.
+
 ## Daily use
 
 ```bash
