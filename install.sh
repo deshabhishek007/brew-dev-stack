@@ -266,6 +266,16 @@ if [[ "$WITH_MAILPIT" == "1" ]]; then
   fi
 fi
 
+# The dashboard is served from the repo itself, so it stays in step with the
+# CLI it reports on. A symlink means the existing wildcard vhost picks it up
+# with no extra nginx config.
+if is_dry; then
+  dry "symlink $SITES_DIR/devstack -> $SCRIPT_DIR/web  (dashboard at https://devstack.$TLD)"
+else
+  ln -sfn "$SCRIPT_DIR/web" "$SITES_DIR/devstack"
+  ok "dashboard → https://devstack.$TLD"
+fi
+
 # --- certificates ----------------------------------------------------------
 bold "Certificates"
 if [[ ! -d "$(mkcert -CAROOT 2>/dev/null)" ]] || ! security find-certificate -c mkcert /Library/Keychains/System.keychain >/dev/null 2>&1; then
@@ -296,7 +306,10 @@ cat <<EOF
        sudo brew services start nginx
 $([[ "$WITH_MYSQL" == "1" ]] && echo "       brew services start mysql")
 
-  Then create a project and visit it:
+  Then open the dashboard:
+       open https://devstack.$TLD
+
+  And create a project:
        mkdir -p $SITES_DIR/hello && echo '<?php phpinfo();' > $SITES_DIR/hello/index.php
        $SCRIPT_DIR/bin/site-cert-regen && sudo nginx -s reload
        open https://hello.$TLD

@@ -263,6 +263,20 @@ PHP gzips its own output the substitution quietly does nothing. The vhost also s
 `HTTPS on`, since Cloudflare terminates TLS and forwards plain HTTP — without it the app
 emits `http://` assets onto an `https` page and browsers block them.
 
+## Dashboard
+
+Once installed, open **`https://devstack.test`** — every site with its type and
+repository, the health checks, and links to Mailpit, Adminer and phpMyAdmin.
+
+It is **read-only by design**. Any page your browser loads can issue requests to
+127.0.0.1, so a local control panel able to create or delete sites would be reachable
+by a malicious page through CSRF or DNS rebinding. Binding to localhost stops your
+network, not your browser. Destructive operations stay in the terminal, where they need
+your shell.
+
+The page reads the same `--json` output the CLI produces, cached for 15 seconds —
+walking 87 sites and running `git` on each takes about 2.5s.
+
 ## Machine-readable output
 
 ```bash
