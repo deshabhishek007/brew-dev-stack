@@ -1,0 +1,98 @@
+name: fresh-install
+
+# A real first-run test: a clean macOS machine, nothing configured.
+# Expensive and slow, so it runs on pull requests and on demand, not every push.
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      SITES_DIR: ${{ runner.temp }}/sites
+      TLD: devtest
+      PHP_VERSION: '8.3'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the starting state
+        run: |
+          echo "brew: $(brew --version | head -1)"
+          echo "prefix: $(brew --prefix)"
+          for f in nginx dnsmasq mkcert php@8.3 mysql wp-cli composer; do
+            printf '%-12s %s\n' "$f" "$(brew list --versions "$f" 2>/dev/null || echo 'NOT INSTALLED')"
+          done
+
+      - name: Dry run must change nothing
+        run: |
+          ./install.sh --dry-run
+          test ! -d "$SITES_DIR" && echo "ok: dry run created no sites dir" || {
+            echo "FAIL: dry run created $SITES_DIR"; exit 1; }
+
+      - name: Install
+        run: ./install.sh
+
+      - name: Trust the local CA
+        run: mkcert -install
+
+      - name: Resolver for .$TLD
+        run: |
+          sudo mkdir -p /etc/resolver
+          echo "nameserver 127.0.0.1" | sudo tee "/etc/resolver/$TLD" >/dev/null
+          sudo killall -HUP mDNSResponder || true
+
+      - name: Start services
+        run: |
+          brew services start "php@$PHP_VERSION"
+          brew services start mysql
+          sudo brew services start dnsmasq
+          sudo brew services start nginx
+          # MySQL reports "started" before it accepts connections.
+          for i in $(seq 1 60); do mysql -uroot -e 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done
+          mysql -uroot -e 'SELECT VERSION()'
+
+      - name: Doctor
+        run: bin/devstack doctor
+
+      - name: Configure and create one site of each type
+        run: |
+          printf 'CI User\nci@example.com\nciadmin\n' | bin/devstack config
+          bin/devstack config --show
+          bin/devstack new wp-site
+          bin/devstack new plain-site --type=plain
+          sudo nginx -s reload
+
+      - name: The sites must actually serve
+        run: |
+          fail=0
+          for s in wp-site plain-site; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "http://$s.$TLD/" || echo 000)
+            echo "$s -> $code"
+            [ "$code" = "200" ] || fail=1
+          done
+          # HTTPS proves the certificate is trusted and covers the name.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://wp-site.$TLD/" || echo 000)
+          echo "https wp-site -> $code"
+          [ "$code" = "200" ] || fail=1
+          curl -sS --max-time 30 "http://wp-site.$TLD/" | grep -qi 'wp-content' \
+            && echo "ok: WordPress served" || { echo "FAIL: not WordPress"; fail=1; }
+          exit $fail
+
+      - name: list and rm
+        run: |
+          bin/devstack list
+          printf 'plain-site\n' | bin/devstack rm plain-site
+          bin/devstack list | grep -q 'plain-site' && { echo "FAIL: still listed"; exit 1; } || echo "ok: removed"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "--- brew services ---"; brew services list || true
+          echo "--- listeners ---";     sudo lsof -nP -iTCP:80 -iTCP:443 -sTCP:LISTEN || true
+          echo "--- nginx error ---";   tail -50 "$(brew --prefix)/var/log/nginx/${TLD}-error.log" || true
+          echo "--- php-fpm ---";       tail -30 "$(brew --prefix)/var/log/php-fpm-${PHP_VERSION}.log" || true
+          echo "--- resolver ---";      cat "/etc/resolver/$TLD" || true
+          echo "--- dig ---";           dig +short "@127.0.0.1" "wp-site.$TLD" || true

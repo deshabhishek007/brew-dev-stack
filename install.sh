@@ -90,8 +90,13 @@ case "$TLD" in
   *) warn "'$TLD' is not an IANA reserved TLD. If it becomes a real domain, you will shadow it." ;;
 esac
 
-mkdir -p "$SITES_DIR"
-ok "Sites directory: $SITES_DIR"
+if is_dry; then
+  [[ -d "$SITES_DIR" ]] || dry "create $SITES_DIR"
+  ok "Sites directory: $SITES_DIR"
+else
+  mkdir -p "$SITES_DIR"
+  ok "Sites directory: $SITES_DIR"
+fi
 info "PHP: $PHP_VERSION   TLD: .$TLD"
 
 # --- packages --------------------------------------------------------------
@@ -131,7 +136,7 @@ render() {  # render <template> <destination>
 backup() { is_dry && { [[ -f "$1" ]] && dry "back up $1"; return 0; }; [[ -f "$1" ]] && cp "$1" "$1.bak-$(date +%Y%m%d%H%M%S)" && info "backed up $(basename "$1")"; return 0; }
 
 bold "Writing configuration"
-mkdir -p "$BREW"/etc/nginx/{servers,certs} "$BREW"/var/log/nginx "$BREW"/var/run "$BREW"/etc/dnsmasq.d
+is_dry || mkdir -p "$BREW"/etc/nginx/{servers,certs} "$BREW"/var/log/nginx "$BREW"/var/run "$BREW"/etc/dnsmasq.d
 
 backup "$BREW/etc/nginx/nginx.conf"
 render "$SCRIPT_DIR/config/nginx.conf.template"    "$BREW/etc/nginx/nginx.conf"
