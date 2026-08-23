@@ -15,6 +15,8 @@ PHP_VERSION="${PHP_VERSION:-8.3}"
 WITH_MYSQL="${WITH_MYSQL:-1}"
 WITH_PHPMYADMIN="${WITH_PHPMYADMIN:-1}"
 WITH_POSTGRES="${WITH_POSTGRES:-0}"
+PG_VERSION="${PG_VERSION:-18}"
+WITH_PGVECTOR="${WITH_PGVECTOR:-0}"
 WITH_ADMINER="${WITH_ADMINER:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -38,7 +40,9 @@ Environment:
   PHP_VERSION       Homebrew PHP version     (default: 8.3)
   WITH_MYSQL        Install and tune MySQL   (default: 1)
   WITH_PHPMYADMIN   Install phpMyAdmin       (default: 1)
-  WITH_POSTGRES     Install PostgreSQL 16    (default: 0)
+  WITH_POSTGRES     Install PostgreSQL       (default: 0)
+  PG_VERSION        PostgreSQL major         (default: 18)
+  WITH_PGVECTOR     Install pgvector         (default: 0; needs WITH_POSTGRES=1)
   WITH_ADMINER      Install Adminer          (default: 1)
 
 Examples:
@@ -95,7 +99,11 @@ bold "Installing packages"
 FORMULAE=(nginx dnsmasq mkcert nss wp-cli "php@${PHP_VERSION}")
 [[ "$WITH_MYSQL" == "1" ]] && FORMULAE+=(mysql)
 [[ "$WITH_PHPMYADMIN" == "1" ]] && FORMULAE+=(phpmyadmin)
-[[ "$WITH_POSTGRES" == "1" ]] && FORMULAE+=(postgresql@16)
+# pgvector's Homebrew bottle is built only against recent PostgreSQL majors.
+# Installing it alongside an older postgres appears to succeed, then
+# CREATE EXTENSION vector fails — so default to a version it supports.
+[[ "$WITH_POSTGRES" == "1" ]] && FORMULAE+=("postgresql@${PG_VERSION}")
+[[ "$WITH_PGVECTOR" == "1" ]] && FORMULAE+=(pgvector)
 for f in "${FORMULAE[@]}"; do
   if brew list --versions "$f" >/dev/null 2>&1; then
     ok "$f (already installed)"

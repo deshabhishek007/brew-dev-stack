@@ -132,6 +132,17 @@ resident, which is a poor trade on a machine with limited RAM.
 Homebrew's PostgreSQL trusts local connections by default, so no password is needed.
 phpMyAdmin remains available at `https://phpmyadmin.test` if you prefer it for MySQL.
 
+### PostgreSQL and pgvector
+
+```bash
+WITH_POSTGRES=1 WITH_PGVECTOR=1 ./install.sh
+```
+
+`PG_VERSION` defaults to **18**. This matters: Homebrew's `pgvector` bottle is built
+only against recent PostgreSQL majors, so installing it next to an older postgres
+*appears to succeed* and then `CREATE EXTENSION vector` fails with "extension not
+available" — a confusing failure, because nothing errored at install time.
+
 ## Daily use
 
 ```bash
