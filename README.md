@@ -29,7 +29,14 @@ This is the same setup expressed as plain configuration files:
 | PHP | `php@8.3` | unix socket, per-version log |
 | TLS | `mkcert` | locally-trusted certificate |
 
-Nothing is hidden. `brew upgrade` maintains all of it.
+Also installed: `wp-cli`, `composer`, `mysql`, `phpmyadmin`, and optionally
+`postgresql` with `pgvector`.
+
+Everything comes from Homebrew except two things, both by necessity:
+**Adminer** (no Homebrew formula exists — fetched from adminer.org and checked before
+installing) and **WordPress core** (fetched by `wp-cli` when you create a site).
+
+Nothing is hidden. `brew upgrade` maintains the rest.
 
 ## Install
 

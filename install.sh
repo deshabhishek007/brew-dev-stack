@@ -96,7 +96,9 @@ info "PHP: $PHP_VERSION   TLD: .$TLD"
 
 # --- packages --------------------------------------------------------------
 bold "Installing packages"
-FORMULAE=(nginx dnsmasq mkcert nss wp-cli "php@${PHP_VERSION}")
+# composer: the vhost supports Laravel/Symfony docroots, so PHP dependency
+# management belongs in the base install, not as an afterthought.
+FORMULAE=(nginx dnsmasq mkcert nss wp-cli composer "php@${PHP_VERSION}")
 [[ "$WITH_MYSQL" == "1" ]] && FORMULAE+=(mysql)
 [[ "$WITH_PHPMYADMIN" == "1" ]] && FORMULAE+=(phpmyadmin)
 # pgvector's Homebrew bottle is built only against recent PostgreSQL majors.
