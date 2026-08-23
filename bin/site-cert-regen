@@ -35,7 +35,8 @@ for d in "$SITES_DIR"/*/; do
   [[ -d "$d" ]] || continue
   n="$(basename "$d")"
   # Valid DNS label only: letters, digits, hyphens; no spaces, no leading/trailing dash.
-  if printf '%s' "$n" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$'; then
+  # See devstack: `producer | grep -q` races with SIGPIPE under pipefail.
+  if grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$' <<<"$n"; then
     names+=("${n}.${TLD}")
   else
     skipped+=("$n")

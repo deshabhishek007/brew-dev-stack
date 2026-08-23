@@ -17,6 +17,13 @@ PHP_VERSION="${_env_PHP:-${PHP_VERSION:-8.3}}"
 BREW="$(brew --prefix)"
 PHPSHORT="${PHP_VERSION//./}"
 
+# `producer | grep -q` is unsafe under `set -o pipefail`: grep -q exits at the
+# first match and closes the pipe, the producer dies of SIGPIPE and exits
+# non-zero, and pipefail then fails the whole pipeline. Which process finishes
+# first is a race, so it shows up as flakiness rather than a clear error.
+# Capture the output first and match against a here-string: no pipeline, no race.
+out_of() { "$@" 2>/dev/null || true; }
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
@@ -44,6 +51,7 @@ Configure
   mysql perf [on|off]       performance_schema (~200 MB when ON)
   install adminer           web UI for MySQL, PostgreSQL and SQLite
   install mailpit           catch all outgoing mail (nothing reaches real inboxes)
+  install xdebug            step debugger and profiler (dormant until triggered)
 
   help, --version
 
@@ -65,7 +73,7 @@ cmd_status() {
   done < <(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$')
 
   for svc in "${installed[@]}"; do
-    if brew services list 2>/dev/null | grep -qE "^${svc//./\\.} +started"; then ok "$svc"; else warn "$svc not started"; fi
+    if grep -qE "^${svc//./\\.} +started" <<<"$(out_of brew services list)"; then ok "$svc"; else warn "$svc not started"; fi
   done
   (( ${#installed[@]} )) || warn "no database or php services installed"
   # nginx rewrites its argv to "nginx: master process …", so `pgrep -x nginx`
@@ -132,7 +140,7 @@ cmd_doctor() {
   [[ -f "/etc/resolver/$TLD" ]] && ok "/etc/resolver/$TLD present" \
     || bad "/etc/resolver/$TLD missing — .$TLD will not resolve"
 
-  if dig +short +time=2 +tries=1 @127.0.0.1 "probe.$TLD" 2>/dev/null | grep -q 127.0.0.1; then
+  if grep -q 127.0.0.1 <<<"$(out_of dig +short +time=2 +tries=1 @127.0.0.1 "probe.$TLD")"; then
     ok "dnsmasq answers *.$TLD"
   else
     bad "dnsmasq is not answering *.$TLD"
@@ -145,7 +153,7 @@ cmd_doctor() {
   if [[ -f "$cert" ]]; then
     local sans; sans=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | grep -c 'DNS' || true)
     ok "certificate present ($sans SANs)"
-    if openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | grep -q "DNS:\*\.$TLD"; then
+    if grep -q "DNS:\*\.$TLD" <<<"$(out_of openssl x509 -in "$cert" -noout -ext subjectAltName)"; then
       bad "certificate uses a *.$TLD wildcard — clients reject wildcards directly under a TLD"
     fi
   else
@@ -158,7 +166,7 @@ cmd_doctor() {
     bad "$shared is not writable by you — php-fpm may fail to start (status 78)"
   fi
 
-  nginx -t 2>&1 | grep -q 'syntax is ok' && ok "nginx config syntax ok" \
+  grep -q 'syntax is ok' <<<"$(nginx -t 2>&1 || true)" && ok "nginx config syntax ok" \
     || warn "run 'sudo nginx -t' for a full config check"
 
   # Mail: the failure mode here is silent real delivery, so check it explicitly.
@@ -166,7 +174,7 @@ cmd_doctor() {
   if [[ "$sp" == *mailpit* ]]; then
     if curl -sf --max-time 3 http://127.0.0.1:8025/readyz >/dev/null 2>&1; then
       ok "mail captured by Mailpit (php mail() routed, inbox reachable)"
-      lsof -nP -iTCP:8025 -sTCP:LISTEN 2>/dev/null | grep -q '127.0.0.1:8025' \
+      grep -q '127.0.0.1:8025' <<<"$(out_of lsof -nP -iTCP:8025 -sTCP:LISTEN)" \
         || bad "Mailpit is listening beyond 127.0.0.1 — captured mail is reachable from your network"
     else
       bad "php mail() points at Mailpit but Mailpit is not responding — mail is being lost"
@@ -427,7 +435,7 @@ cmd_new() {
   adminpass="$(gen_password)"
   url="https://$site.$TLD"
 
-  if mysql_root -N -e "SHOW DATABASES LIKE '$db'" | grep -q .; then
+  if grep -q . <<<"$(mysql_root -N -e "SHOW DATABASES LIKE '$db'" 2>/dev/null || true)"; then
     bad "Database '$db' already exists. Drop it or choose another name."; exit 1
   fi
 
@@ -592,7 +600,7 @@ cmd_list() {
     repo="$(site_repo "${d%/}")"
     docroot="root"; [[ -d "${d%/}/public" ]] && docroot="public/"
     n=$((n+1))
-    if printf '%s' "$name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$'; then
+    if grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$' <<<"$name"; then
       url="https://$name.$TLD"; served=$((served+1))
     else
       url="(name not a valid hostname — not served)"
@@ -622,7 +630,7 @@ cmd_rm() {
 
   local db="" dbuser db_exists=0 cand
   while IFS= read -r cand; do
-    if mysql_root -N -e "SHOW DATABASES LIKE '$cand'" 2>/dev/null | grep -q .; then
+    if grep -q . <<<"$(mysql_root -N -e "SHOW DATABASES LIKE '$cand'" 2>/dev/null || true)"; then
       db="$cand"; db_exists=1; break
     fi
   done < <(site_db_candidates "$site")
@@ -681,7 +689,7 @@ cmd_adminer() {
     rm -f "$tmp"; bad "Download failed."; exit 1
   fi
   # A truncated download or an error page would otherwise be served as a site.
-  if ! head -c 20 "$tmp" | grep -q '<?php'; then
+  if ! grep -q '<?php' <<<"$(head -c 20 "$tmp" 2>/dev/null || true)"; then
     rm -f "$tmp"; bad "Downloaded file is not PHP — refusing to install it."; exit 1
   fi
   local size; size="$(wc -c < "$tmp" | tr -d ' ')"
@@ -746,7 +754,7 @@ EOF
   local i
   launchctl bootout gui/"$(id -u)"/dev.brewdevstack.mailpit 2>/dev/null || true
   for i in $(seq 1 10); do
-    launchctl list 2>/dev/null | grep -q dev.brewdevstack.mailpit || break
+    grep -q dev.brewdevstack.mailpit <<<"$(out_of launchctl list)" || break
     sleep 1
   done
   launchctl enable gui/"$(id -u)"/dev.brewdevstack.mailpit 2>/dev/null || true
@@ -757,7 +765,7 @@ EOF
 
   # Never report success without proving it: a stale process answering readyz
   # would otherwise mask a failed bootstrap.
-  launchctl list 2>/dev/null | grep -q dev.brewdevstack.mailpit \
+  grep -q dev.brewdevstack.mailpit <<<"$(out_of launchctl list)" \
     || { bad "mailpit agent failed to load"; return 1; }
   for i in $(seq 1 20); do curl -sf --max-time 2 http://127.0.0.1:8025/readyz >/dev/null 2>&1 && break; sleep 1; done
   if curl -sf --max-time 3 http://127.0.0.1:8025/readyz >/dev/null 2>&1; then
@@ -788,6 +796,81 @@ EOF
   warn "Reload nginx:  sudo nginx -s reload"
 }
 
+# --- xdebug ----------------------------------------------------------------
+cmd_install_xdebug() {
+  local ini="$BREW/etc/php/$PHP_VERSION/conf.d/zz-xdebug.ini"
+  local extdir; extdir="$(php -i 2>/dev/null | sed -nE 's/^extension_dir => ([^ ]+) .*/\1/p' | head -1)"
+
+  command -v pecl >/dev/null || { bad "pecl not found — it ships with php@$PHP_VERSION"; return 1; }
+  xcode-select -p >/dev/null 2>&1 || { bad "Xcode command line tools required:  xcode-select --install"; return 1; }
+
+  if [[ -f "$extdir/xdebug.so" ]]; then
+    ok "xdebug.so already built for PHP $PHP_VERSION"
+  else
+    echo "Compiling Xdebug for PHP $PHP_VERSION (a minute or two)…"
+    # Xdebug is not in Homebrew core, so this is a pecl build. That means it is
+    # tied to one PHP version and must be rebuilt when you switch versions —
+    # `devstack php <ver>` reminds you.
+    pecl install xdebug >/dev/null 2>&1 || pecl install --force xdebug >/dev/null 2>&1
+    [[ -f "$extdir/xdebug.so" ]] || { bad "build failed — run 'pecl install xdebug' to see why"; return 1; }
+    ok "built $extdir/xdebug.so"
+  fi
+
+  # pecl appends a bare "extension=xdebug.so" to php.ini, which is wrong for a
+  # Zend extension and can load it twice. Remove that and configure properly.
+  local phpini="$BREW/etc/php/$PHP_VERSION/php.ini"
+  if grep -qE '^\s*(zend_)?extension\s*=\s*"?xdebug' "$phpini" 2>/dev/null; then
+    /usr/bin/sed -i '' -E '/^[[:space:]]*(zend_)?extension[[:space:]]*=[[:space:]]*"?xdebug/d' "$phpini"
+    ok "removed pecl's duplicate extension line from php.ini"
+  fi
+
+  cat > "$ini" <<EOF
+; Xdebug — must be loaded as a Zend extension, not a plain one.
+zend_extension = "$extdir/xdebug.so"
+
+; Dormant until asked. Always-on step debugging slows every request
+; noticeably, so trigger it per request instead:
+;   browser  — an Xdebug helper extension, or ?XDEBUG_TRIGGER=1
+;   cli      — XDEBUG_TRIGGER=1 php script.php
+xdebug.mode = debug,develop
+xdebug.start_with_request = trigger
+xdebug.client_host = 127.0.0.1
+xdebug.client_port = 9003
+xdebug.idekey = VSCODE
+xdebug.log_level = 0
+
+; develop mode gives readable stack traces and var_dump output.
+xdebug.max_nesting_level = 512
+
+; Profiling and coverage are opt-in via mode; uncomment when needed.
+; xdebug.mode = profile
+; xdebug.output_dir = $BREW/var/log/xdebug
+EOF
+  mkdir -p "$BREW/var/log/xdebug"
+  brew services restart "php@$PHP_VERSION" >/dev/null 2>&1
+
+  local i
+  for i in $(seq 1 15); do grep -qi '^xdebug$' <<<"$(out_of php -m)" && break; sleep 1; done
+  if grep -qi '^xdebug$' <<<"$(out_of php -m)"; then
+    ok "xdebug $(php -r 'echo phpversion("xdebug");' 2>/dev/null) loaded (mode: $(php -r 'echo ini_get("xdebug.mode");' 2>/dev/null))"
+  else
+    bad "xdebug did not load — check $ini"; return 1
+  fi
+
+  cat <<EOF
+
+  Step debugging listens on port 9003. Start your IDE listener, then trigger a
+  request with ?XDEBUG_TRIGGER=1 (or an Xdebug browser helper).
+
+  VS Code launch.json:
+    { "name": "Listen for Xdebug", "type": "php", "request": "launch", "port": 9003 }
+
+  PhpStorm: Run > Start Listening for PHP Debug Connections.
+
+EOF
+  warn "Xdebug is built per PHP version — re-run this after 'devstack php <ver>'"
+}
+
 VERSION="0.1.0"
 
 cmd_mysql() {
@@ -802,8 +885,9 @@ cmd_install() {
   case "${1:-}" in
     adminer) cmd_adminer ;;
     mailpit) cmd_install_mailpit ;;
-    "")      bad "Usage: devstack install <adminer|mailpit>"; exit 1 ;;
-    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit"; exit 1 ;;
+    xdebug)  cmd_install_xdebug ;;
+    "")      bad "Usage: devstack install <adminer|mailpit|xdebug>"; exit 1 ;;
+    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit, xdebug"; exit 1 ;;
   esac
 }
 

@@ -185,6 +185,26 @@ Homebrew's own `mailpit` service is deliberately not used: it passes no argument
 mailpit listens on every interface, and brew rewrites its plist on each `brew services`
 call, so the bind flags cannot live there.
 
+## Debugging
+
+```bash
+bin/devstack install xdebug
+bin/devstack logs php          # PHP errors
+bin/devstack logs mysite       # a site's WordPress debug.log
+bin/devstack logs all          # nginx and PHP together
+```
+
+Xdebug is configured with `start_with_request = trigger`, so it stays dormant until you
+ask for it — always-on step debugging slows every request noticeably. Trigger with
+`?XDEBUG_TRIGGER=1`, or a browser helper extension. It listens on port 9003.
+
+**Xdebug is not in Homebrew.** It is a `pecl` build tied to one PHP version, so it lives
+outside `brew upgrade` and must be rebuilt after `devstack php <ver>` — the command says
+so when it finishes.
+
+New sites also get `WP_DEBUG` / `WP_DEBUG_LOG` (WordPress) and `.env` debug defaults
+(Laravel), and PHP errors are written to `$(brew --prefix)/var/log/php-error.log`.
+
 ## Daily use
 
 ```bash
