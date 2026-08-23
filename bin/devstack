@@ -42,6 +42,7 @@ Configure
   php [version]             show or switch the PHP version
   mysql perf [on|off]       performance_schema (~200 MB when ON)
   install adminer           web UI for MySQL, PostgreSQL and SQLite
+  install mailpit           catch all outgoing mail (nothing reaches real inboxes)
 
   help, --version
 
@@ -439,6 +440,18 @@ PHPEOF
       -e "s|^DB_PASSWORD=.*|DB_PASSWORD=$dbpass|" \
       "$dir/.env"
 
+    # Point Laravel's mailer at Mailpit when it is running, so queued mail and
+    # mailable previews are captured like everything else.
+    if curl -sf --max-time 2 http://127.0.0.1:8025/readyz >/dev/null 2>&1; then
+      /usr/bin/sed -i '' \
+        -e "s|^MAIL_MAILER=.*|MAIL_MAILER=smtp|" \
+        -e "s|^MAIL_HOST=.*|MAIL_HOST=127.0.0.1|" \
+        -e "s|^MAIL_PORT=.*|MAIL_PORT=1025|" \
+        -e "s|^MAIL_FROM_ADDRESS=.*|MAIL_FROM_ADDRESS=\"$site@$TLD\"|" \
+        "$dir/.env"
+      ok "mail routed to Mailpit"
+    fi
+
     info_step "migrations"
     (cd "$dir" && php artisan migrate --force --quiet 2>/dev/null) \
       && ok "migrations ran" || warn "migrations failed — run: cd $dir && php artisan migrate"
@@ -646,6 +659,88 @@ EOF
   warn "Reload nginx:  sudo nginx -s reload"
 }
 
+# --- mailpit ---------------------------------------------------------------
+cmd_install_mailpit() {
+  local plist="$HOME/Library/LaunchAgents/dev.brewdevstack.mailpit.plist"
+  local ini="$BREW/etc/php/$PHP_VERSION/conf.d/zz-mailpit.ini"
+  local vhost="$BREW/etc/nginx/servers/mailpit.conf"
+  local tpl; tpl="$(dirname "${BASH_SOURCE[0]}")/../config/mailpit.conf.template"
+
+  brew list --versions mailpit >/dev/null 2>&1 || { echo "Installing mailpit…"; brew install mailpit >/dev/null; }
+  ok "mailpit $(brew list --versions mailpit | awk '{print $2}')"
+
+  # Homebrew's own service passes no arguments, so mailpit would listen on all
+  # interfaces — and captured mail contains password-reset links. Brew rewrites
+  # its plist on every services call, so the flags cannot live there.
+  brew services stop mailpit >/dev/null 2>&1 || true
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.brewdevstack.mailpit</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BREW/opt/mailpit/bin/mailpit</string>
+    <string>--listen</string><string>127.0.0.1:8025</string>
+    <string>--smtp</string><string>127.0.0.1:1025</string>
+    <string>--max</string><string>2000</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$BREW/var/log/mailpit.log</string>
+  <key>StandardErrorPath</key><string>$BREW/var/log/mailpit.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+EOF
+  # bootout is not synchronous: bootstrapping immediately after can fail with
+  # "Bootstrap failed: 5". Wait for it to unload, then retry the bootstrap.
+  local i
+  launchctl bootout gui/"$(id -u)"/dev.brewdevstack.mailpit 2>/dev/null || true
+  for i in $(seq 1 10); do
+    launchctl list 2>/dev/null | grep -q dev.brewdevstack.mailpit || break
+    sleep 1
+  done
+  launchctl enable gui/"$(id -u)"/dev.brewdevstack.mailpit 2>/dev/null || true
+  for i in 1 2 3; do
+    launchctl bootstrap gui/"$(id -u)" "$plist" 2>/dev/null && break
+    sleep 2
+  done
+
+  # Never report success without proving it: a stale process answering readyz
+  # would otherwise mask a failed bootstrap.
+  launchctl list 2>/dev/null | grep -q dev.brewdevstack.mailpit \
+    || { bad "mailpit agent failed to load"; return 1; }
+  for i in $(seq 1 20); do curl -sf --max-time 2 http://127.0.0.1:8025/readyz >/dev/null 2>&1 && break; sleep 1; done
+  if curl -sf --max-time 3 http://127.0.0.1:8025/readyz >/dev/null 2>&1; then
+    ok "running on 127.0.0.1:1025 (smtp) and :8025 (ui)"
+  else
+    bad "mailpit did not come up — see $BREW/var/log/mailpit.log"; return 1
+  fi
+
+  # One setting catches every PHP application, WordPress included — no plugin.
+  mkdir -p "$(dirname "$ini")"
+  cat > "$ini" <<EOF
+; Route all PHP mail() through Mailpit instead of the system MTA.
+; Otherwise mail() hands off to postfix, which attempts real MX delivery: a
+; local test site can email a real person, and you cannot see what was sent.
+sendmail_path = "$BREW/opt/mailpit/bin/mailpit sendmail -S 127.0.0.1:1025"
+EOF
+  brew services restart "php@$PHP_VERSION" >/dev/null 2>&1
+  ok "php mail() routed to mailpit"
+
+  if [[ -f "$tpl" ]]; then
+    sed -e "s|{{BREW}}|$BREW|g" -e "s|{{TLD}}|$TLD|g" "$tpl" > "$vhost"
+    ok "vhost → https://mailpit.$TLD"
+  fi
+
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+    && ok "certificate covers mailpit.$TLD"
+  echo
+  warn "Reload nginx:  sudo nginx -s reload"
+}
+
 VERSION="0.1.0"
 
 cmd_mysql() {
@@ -659,8 +754,9 @@ cmd_mysql() {
 cmd_install() {
   case "${1:-}" in
     adminer) cmd_adminer ;;
-    "")      bad "Usage: devstack install adminer"; exit 1 ;;
-    *)       bad "Nothing to install called '$1'. Available: adminer"; exit 1 ;;
+    mailpit) cmd_install_mailpit ;;
+    "")      bad "Usage: devstack install <adminer|mailpit>"; exit 1 ;;
+    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit"; exit 1 ;;
   esac
 }
 

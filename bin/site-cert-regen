@@ -42,6 +42,16 @@ for d in "$SITES_DIR"/*/; do
   fi
 done
 
+# Cover hostnames served by vhosts that are not project directories
+# (mailpit, and anything else you add under servers/).
+for conf in "$BREW"/etc/nginx/servers/*.conf; do
+  [[ -f "$conf" ]] || continue
+  while IFS= read -r extra; do
+    [[ "$extra" == *".$TLD" ]] || continue
+    [[ " ${names[*]} " == *" $extra "* ]] || names+=("$extra")
+  done < <(sed -nE 's|^[[:space:]]*server_name[[:space:]]+([a-zA-Z0-9.-]+)[[:space:]]*;.*|\1|p' "$conf")
+done
+
 echo "Generating certificate for ${#names[@]} names…"
 cd "$CERTDIR"
 mkcert -cert-file "local-${TLD}.pem" -key-file "local-${TLD}-key.pem" "${names[@]}"

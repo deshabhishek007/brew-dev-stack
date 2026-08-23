@@ -158,6 +158,33 @@ only against recent PostgreSQL majors, so installing it next to an older postgre
 *appears to succeed* and then `CREATE EXTENSION vector` fails with "extension not
 available" — a confusing failure, because nothing errored at install time.
 
+## Catching outgoing mail
+
+```bash
+bin/devstack install mailpit
+```
+
+Every WordPress and Laravel site sends mail. Without a catcher, PHP's `mail()` hands off
+to the system MTA — on macOS, postfix — which attempts **real MX delivery**. It usually
+fails from a home connection, but it fails *silently*, and "usually" is not "never". A
+local test of a password reset or an order confirmation can reach a real person.
+
+Mailpit fixes that at the stack level rather than per site:
+
+| | |
+|---|---|
+| Inbox | `https://mailpit.test` |
+| SMTP | `127.0.0.1:1025` |
+| Bound to | **127.0.0.1 only** — captured mail contains password-reset links |
+
+`sendmail_path` is set once in `php.ini`, so **every** PHP application is captured —
+WordPress included, with no plugin. New Laravel sites additionally get `MAIL_*` written
+into `.env`, so queued mail and mailable previews work natively.
+
+Homebrew's own `mailpit` service is deliberately not used: it passes no arguments, so
+mailpit listens on every interface, and brew rewrites its plist on each `brew services`
+call, so the bind flags cannot live there.
+
 ## Daily use
 
 ```bash

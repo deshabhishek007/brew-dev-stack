@@ -18,6 +18,7 @@ WITH_POSTGRES="${WITH_POSTGRES:-0}"
 PG_VERSION="${PG_VERSION:-18}"
 WITH_PGVECTOR="${WITH_PGVECTOR:-0}"
 WITH_ADMINER="${WITH_ADMINER:-1}"
+WITH_MAILPIT="${WITH_MAILPIT:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
 usage() {
@@ -44,6 +45,7 @@ Environment:
   PG_VERSION        PostgreSQL major         (default: 18)
   WITH_PGVECTOR     Install pgvector         (default: 0; needs WITH_POSTGRES=1)
   WITH_ADMINER      Install Adminer          (default: 1)
+  WITH_MAILPIT      Install Mailpit          (default: 1)
 
 Examples:
   ./install.sh --dry-run
@@ -242,6 +244,16 @@ EOF
   fi
   chmod 600 "$CFG"
   ok "settings recorded in $CFG"
+fi
+
+if [[ "$WITH_MAILPIT" == "1" ]]; then
+  if is_dry; then
+    dry "install Mailpit, route php mail() to it, serve https://mailpit.$TLD"
+  else
+    "$SCRIPT_DIR/bin/devstack" install mailpit >/dev/null 2>&1 \
+      && ok "mailpit → https://mailpit.$TLD" \
+      || warn "mailpit install failed — run: bin/devstack install mailpit"
+  fi
 fi
 
 # --- certificates ----------------------------------------------------------
