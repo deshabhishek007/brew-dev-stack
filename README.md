@@ -82,6 +82,56 @@ hostname to the certificate, and prints a generated admin password — shown onc
 
 Change it in Users → Profile, or `wp user update ... --user_pass=...`.
 
+## Managing sites
+
+```bash
+bin/devstack list
+```
+
+```
+SITE              TYPE            DOCROOT  REPO                        URL
+climaone          PHP (composer)  public/  you/climaone-amc            https://climaone.test
+ofis-management   Laravel         public/  you/ofis-management         https://ofis-management.test
+wpmeta            WordPress       root     you/wpmeta                  https://wpmeta.test
+phpmyadmin        PHP (composer)  root     -                           https://phpmyadmin.test →link
+```
+
+Type is detected from what is on disk (`wp-config.php`, `artisan`, `bin/console`,
+`composer.json`), and the repo column only reports a repository **rooted at that
+directory** — without that check, a symlinked site walks up the tree and reports
+whatever repo happens to contain its target.
+
+```bash
+bin/devstack rm oldsite                    # files + database + db user
+bin/devstack rm oldsite --keep-db          # keep the data
+bin/devstack rm oldsite --keep-files       # keep the code
+```
+
+`rm` shows exactly what it will delete, warns about uncommitted or unpushed git work,
+and requires you to type the site name — `y` is too easy to hit by reflex for something
+that drops a database.
+
+## Database administration
+
+```bash
+bin/devstack adminer
+```
+
+Installs [Adminer](https://www.adminer.org/) at `https://adminer.test` — a single PHP
+file that administers **MySQL, PostgreSQL and SQLite** through one UI. It is served by
+the stack you already have, so it costs nothing when you are not looking at it.
+
+That matters for PostgreSQL specifically: pgAdmin is an Electron application that stays
+resident, which is a poor trade on a machine with limited RAM.
+
+| | |
+|---|---|
+| MySQL | system `MySQL`, server `127.0.0.1`, user `root`, no password |
+| PostgreSQL | system `PostgreSQL`, server `127.0.0.1:5432`, your macOS username |
+
+Homebrew's PostgreSQL trusts local connections by default, so no password is needed.
+phpMyAdmin remains available at `https://phpmyadmin.test` if you prefer it for MySQL.
+
 ## Daily use
 
 ```bash

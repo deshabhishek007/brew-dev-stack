@@ -14,6 +14,8 @@ TLD="${TLD:-test}"
 PHP_VERSION="${PHP_VERSION:-8.3}"
 WITH_MYSQL="${WITH_MYSQL:-1}"
 WITH_PHPMYADMIN="${WITH_PHPMYADMIN:-1}"
+WITH_POSTGRES="${WITH_POSTGRES:-0}"
+WITH_ADMINER="${WITH_ADMINER:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
 usage() {
@@ -36,6 +38,8 @@ Environment:
   PHP_VERSION       Homebrew PHP version     (default: 8.3)
   WITH_MYSQL        Install and tune MySQL   (default: 1)
   WITH_PHPMYADMIN   Install phpMyAdmin       (default: 1)
+  WITH_POSTGRES     Install PostgreSQL 16    (default: 0)
+  WITH_ADMINER      Install Adminer          (default: 1)
 
 Examples:
   ./install.sh --dry-run
@@ -91,6 +95,7 @@ bold "Installing packages"
 FORMULAE=(nginx dnsmasq mkcert nss wp-cli "php@${PHP_VERSION}")
 [[ "$WITH_MYSQL" == "1" ]] && FORMULAE+=(mysql)
 [[ "$WITH_PHPMYADMIN" == "1" ]] && FORMULAE+=(phpmyadmin)
+[[ "$WITH_POSTGRES" == "1" ]] && FORMULAE+=(postgresql@16)
 for f in "${FORMULAE[@]}"; do
   if brew list --versions "$f" >/dev/null 2>&1; then
     ok "$f (already installed)"
@@ -178,6 +183,16 @@ if [[ "$WITH_PHPMYADMIN" == "1" ]]; then
   mkdir -p "$BREW/var/tmp/phpmyadmin" && chmod 700 "$BREW/var/tmp/phpmyadmin"
   ln -sfn "$BREW/share/phpmyadmin" "$SITES_DIR/phpmyadmin"
   ok "phpmyadmin → https://phpmyadmin.$TLD (symlinked into $SITES_DIR)"
+  fi
+fi
+
+if [[ "$WITH_ADMINER" == "1" ]]; then
+  if is_dry; then
+    dry "download Adminer to $SITES_DIR/adminer/index.php"
+  else
+    "$SCRIPT_DIR/bin/devstack" adminer >/dev/null 2>&1 \
+      && ok "adminer → https://adminer.$TLD" \
+      || warn "adminer install failed — run: bin/devstack adminer"
   fi
 fi
 

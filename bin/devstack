@@ -20,6 +20,9 @@ Usage: devstack <command>
 
   config     one-time setup: your name, email and admin username
   new <name> create a WordPress site: database, core, install, certificate
+  list       every site, its type, git repo and URL
+  adminer    install/update Adminer (MySQL + PostgreSQL + SQLite web UI)
+  rm <name>  delete a site and its database (asks you to confirm by name)
   status     show what is running and whether the stack answers
   php [ver]  show the active PHP version, or switch to it (e.g. devstack php 8.4)
   mysql-perf [on|off]
@@ -385,9 +388,159 @@ EOF
   warn "Reload nginx so the new certificate is served:  sudo nginx -s reload"
 }
 
+# --- list ------------------------------------------------------------------
+site_kind() {  # site_kind <dir> -> human label
+  local d="$1"
+  if   [[ -f "$d/wp-config.php" || -f "$d/wp-load.php" ]]; then echo "WordPress"
+  elif [[ -f "$d/artisan" ]]; then echo "Laravel"
+  elif [[ -f "$d/bin/console" ]]; then echo "Symfony"
+  elif [[ -f "$d/composer.json" ]]; then echo "PHP (composer)"
+  elif [[ -f "$d/index.php" ]]; then echo "PHP"
+  elif [[ -f "$d/index.html" ]]; then echo "static"
+  else echo "-"; fi
+}
+
+site_repo() {  # site_repo <dir> -> owner/name, or "-"
+  local d="$1" url top
+  # Only report a repo rooted at this directory. Without this, a symlinked site
+  # (e.g. phpmyadmin -> /opt/homebrew/share/phpmyadmin) walks up and reports
+  # Homebrew's own repository.
+  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || { echo "-"; return; }
+  [[ "$(cd "$d" && pwd -P)" == "$(cd "$top" && pwd -P)" ]] || { echo "-"; return; }
+  url="$(git -C "$d" remote get-url origin 2>/dev/null)" || { echo "-"; return; }
+  # git@host:owner/name.git  or  https://host/owner/name.git
+  url="${url%.git}"; url="${url##*:}"; url="${url#//}"
+  case "$url" in */*/*) echo "${url#*/}" ;; *) echo "${url##*/}" ;; esac
+}
+
+cmd_list() {
+  local n=0 served=0
+  printf '  %-24s %-15s %-8s %-28s %s\n' "SITE" "TYPE" "DOCROOT" "REPO" "URL"
+  printf '  %-24s %-15s %-8s %-28s %s\n' "----" "----" "-------" "----" "---"
+  for d in "$SITES_DIR"/*/; do
+    [[ -d "$d" ]] || continue
+    local name kind repo docroot url mark
+    name="$(basename "$d")"
+    kind="$(site_kind "${d%/}")"
+    repo="$(site_repo "${d%/}")"
+    docroot="root"; [[ -d "${d%/}/public" ]] && docroot="public/"
+    n=$((n+1))
+    if printf '%s' "$name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$'; then
+      url="https://$name.$TLD"; served=$((served+1))
+    else
+      url="(name not a valid hostname — not served)"
+    fi
+    mark=""; [[ -L "${d%/}" ]] && mark=" →link"
+    printf '  %-24s %-15s %-8s %-28s %s%s\n' "${name:0:24}" "$kind" "$docroot" "${repo:0:28}" "$url" "$mark"
+  done
+  echo
+  echo "  $n directories, $served served"
+}
+
+# --- rm --------------------------------------------------------------------
+cmd_rm() {
+  local site="${1:-}" keep_db=0 keep_files=0
+  shift || true
+  for a in "$@"; do
+    case "$a" in
+      --keep-db)    keep_db=1 ;;
+      --keep-files) keep_files=1 ;;
+      *) bad "Unknown option: $a"; exit 1 ;;
+    esac
+  done
+  [[ -n "$site" ]] || { bad "Usage: devstack rm <sitename> [--keep-db] [--keep-files]"; exit 1; }
+
+  local dir="$SITES_DIR/$site"
+  [[ -e "$dir" ]] || { bad "No such site: $dir"; exit 1; }
+
+  local db="wp_${site//-/_}" dbuser
+  db="${db:0:64}"; dbuser="${db:0:32}"
+  local db_exists=0
+  mysql_root -N -e "SHOW DATABASES LIKE '$db'" 2>/dev/null | grep -q . && db_exists=1
+
+  echo "About to remove:"
+  [[ "$keep_files" == "0" ]] && echo "  files     $dir  ($(du -sh "$dir" 2>/dev/null | cut -f1))" \
+                             || echo "  files     kept (--keep-files)"
+  if [[ "$db_exists" == "1" && "$keep_db" == "0" ]]; then
+    echo "  database  $db  ($(mysql_root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$db'" 2>/dev/null) tables)"
+    echo "  db user   $dbuser@127.0.0.1"
+  elif [[ "$db_exists" == "1" ]]; then
+    echo "  database  $db  kept (--keep-db)"
+  else
+    echo "  database  none found named $db"
+  fi
+
+  # Uncommitted work is the one thing that cannot be recovered afterwards.
+  if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local dirty; dirty="$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$dirty" != "0" ]] && warn "$dirty uncommitted change(s) in this git repo"
+    local unpushed; unpushed="$(git -C "$dir" log --branches --not --remotes --oneline 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$unpushed" != "0" ]] && warn "$unpushed unpushed commit(s)"
+  fi
+
+  echo
+  echo "This cannot be undone. Type the site name to confirm:"
+  local answer; read -r -p "  > " answer
+  [[ "$answer" == "$site" ]] || { echo "  Names did not match. Aborted."; exit 0; }
+
+  if [[ "$db_exists" == "1" && "$keep_db" == "0" ]]; then
+    mysql_root -e "DROP DATABASE \`$db\`;" && ok "dropped $db"
+    mysql_root -e "DROP USER IF EXISTS '$dbuser'@'127.0.0.1';" && ok "dropped user $dbuser"
+  fi
+  if [[ "$keep_files" == "0" ]]; then
+    rm -rf "$dir" && ok "removed $dir"
+  fi
+
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+    && ok "certificate regenerated" || warn "certificate regeneration failed"
+  warn "Reload nginx:  sudo nginx -s reload"
+}
+
+# --- adminer (MySQL + PostgreSQL + SQLite in one PHP file) -----------------
+cmd_adminer() {
+  local dir="$SITES_DIR/adminer" url="https://www.adminer.org/latest.php"
+  local tmp; tmp="$(mktemp -t adminer)"
+
+  echo "Adminer — one PHP file, administers MySQL, PostgreSQL and SQLite."
+  echo "  source: $url"
+  echo "  target: $dir/index.php"
+  echo
+
+  if ! curl -fsSL --max-time 60 -o "$tmp" "$url"; then
+    rm -f "$tmp"; bad "Download failed."; exit 1
+  fi
+  # A truncated download or an error page would otherwise be served as a site.
+  if ! head -c 20 "$tmp" | grep -q '<?php'; then
+    rm -f "$tmp"; bad "Downloaded file is not PHP — refusing to install it."; exit 1
+  fi
+  local size; size="$(wc -c < "$tmp" | tr -d ' ')"
+  (( size > 100000 )) || { rm -f "$tmp"; bad "File is only ${size}B — suspiciously small."; exit 1; }
+
+  mkdir -p "$dir"
+  mv "$tmp" "$dir/index.php"
+  chmod 644 "$dir/index.php"
+  ok "installed ($(( size / 1024 )) KB)"
+
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+    && ok "certificate now covers adminer.$TLD" || warn "run site-cert-regen"
+
+  cat <<EOF
+
+  https://adminer.$TLD
+
+  MySQL        system: MySQL       server: 127.0.0.1        user: root   (no password)
+  PostgreSQL   system: PostgreSQL  server: 127.0.0.1:5432   user: $USER
+
+EOF
+  warn "Reload nginx:  sudo nginx -s reload"
+}
+
 case "${1:-}" in
   config) shift; cmd_config "${1:-}" ;;
   new)    shift; cmd_new "${1:-}" ;;
+  list)   cmd_list ;;
+  adminer) cmd_adminer ;;
+  rm)     shift; cmd_rm "$@" ;;
   status) cmd_status ;;
   php)    shift; cmd_php "${1:-}" ;;
   mysql-perf) shift; cmd_mysql_perf "${1:-}" ;;
