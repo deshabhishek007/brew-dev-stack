@@ -35,7 +35,8 @@ Stack
   doctor                    diagnose why something is not working
   start | stop              start or stop the stack (nginx, dnsmasq need sudo)
   reload                    regenerate certificate, reload nginx
-  logs                      tail the nginx error log
+  logs [nginx|access|php|fpm|all|<site>]
+                            follow a log; a site name gives its debug.log
 
 Configure
   config [--show]           your name, email, admin username
@@ -105,7 +106,26 @@ cmd_reload() {
   sudo nginx -s reload && ok "nginx reloaded"
 }
 
-cmd_logs() { tail -f "$BREW/var/log/nginx/${TLD}-error.log"; }
+cmd_logs() {
+  local what="${1:-}"
+  case "$what" in
+    nginx|"")  echo "→ nginx errors (ctrl-c to stop)"; tail -f "$BREW/var/log/nginx/${TLD}-error.log" ;;
+    access)    echo "→ nginx access";  tail -f "$BREW/var/log/nginx/${TLD}-access.log" ;;
+    php)       echo "→ php errors";    tail -f "$BREW/var/log/php-error.log" ;;
+    fpm)       echo "→ php-fpm";       tail -f "$BREW/var/log/php-fpm-${PHP_VERSION}.log" ;;
+    all)       echo "→ nginx + php together"
+               tail -f "$BREW/var/log/nginx/${TLD}-error.log" "$BREW/var/log/php-error.log" ;;
+    *)
+      # A site name: WordPress writes its own debug.log when WP_DEBUG_LOG is on.
+      local wp="$SITES_DIR/$what/wp-content/debug.log"
+      if [[ -f "$wp" ]]; then echo "→ $what WordPress debug.log"; tail -f "$wp"
+      elif [[ -d "$SITES_DIR/$what" ]]; then
+        bad "No debug.log for $what yet (WordPress creates it on the first logged error)"
+        echo "       Laravel: tail -f $SITES_DIR/$what/storage/logs/laravel.log"
+        exit 1
+      else bad "Unknown log '$what'. Use: nginx, access, php, fpm, all, or a site name"; exit 1; fi ;;
+  esac
+}
 
 cmd_doctor() {
   echo "Checks"
@@ -796,7 +816,7 @@ case "${1:-}" in
   start)   cmd_start ;;
   stop)    cmd_stop ;;
   reload)  cmd_reload ;;
-  logs)    cmd_logs ;;
+  logs)    shift; cmd_logs "${1:-}" ;;
   config)  shift; cmd_config "${1:-}" ;;
   php)     shift; cmd_php "${1:-}" ;;
   mysql)   shift; cmd_mysql "$@" ;;

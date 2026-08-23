@@ -171,7 +171,17 @@ elif [[ -f "$FPM_POOL" ]]; then
   for stale in "$BREW/etc/php/$PHP_VERSION/php-fpm.d/"*valet*.conf; do
     [[ -e "$stale" ]] && mv "$stale" "$stale.disabled" && warn "disabled stale pool $(basename "$stale")"
   done
-  ok "php-fpm ($PHP_VERSION) on unix socket"
+  # php-fpm has no stderr, so an unwritable error_log discards every error from
+  # a web request silently. Point it somewhere real.
+  cat > "$BREW/etc/php/$PHP_VERSION/conf.d/zz-error-log.ini" <<EOF
+error_log = "$BREW/var/log/php-error.log"
+log_errors = On
+display_errors = On
+display_startup_errors = On
+error_reporting = E_ALL
+EOF
+  touch "$BREW/var/log/php-error.log"
+  ok "php-fpm ($PHP_VERSION) on unix socket, errors to $BREW/var/log/php-error.log"
 else
   die "php-fpm pool config not found at $FPM_POOL"
 fi
