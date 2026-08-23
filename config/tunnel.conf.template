@@ -1,0 +1,62 @@
+# Serves whichever site `devstack tunnel` last pointed here.
+#
+# The tunnel must NOT rewrite the Host header: WordPress stores siteurl/home in
+# the database and Laravel has APP_URL, so if the app sees "site.{{TLD}}" while
+# the browser is on trycloudflare.com, every asset URL points at a host the
+# visitor cannot reach — CSS and JS fail and the page renders unstyled.
+#
+# So cloudflared forwards the real public hostname, and this block matches it.
+# Its target is one generated include, rewritten each time a tunnel starts.
+server {
+    listen 127.0.0.1:80;
+    server_name ~^.+\.trycloudflare\.com$;
+
+    include {{BREW}}/etc/nginx/tunnel-target.conf;
+
+    root $t_root;
+    index index.php index.html;
+    charset utf-8;
+    client_max_body_size 128M;
+
+    access_log {{BREW}}/var/log/nginx/tunnel-access.log;
+    error_log  {{BREW}}/var/log/nginx/tunnel-error.log;
+
+    # Rewrite the local hostname out of the response body.
+    #
+    # WordPress stores absolute URLs inside post content, and Laravel does the
+    # same in some settings. WP_HOME/WP_SITEURL only affect URLs the framework
+    # *generates* — anything already written into the database still points at
+    # the .test name, so those images and links 404 for a visitor.
+    #
+    # Substituting on the way out fixes every case without touching the
+    # database or the application, and works for any site.
+    sub_filter_once off;
+    # text/html is always included and listing it again warns of a duplicate.
+    sub_filter_types text/css text/xml application/javascript application/json;
+    include {{BREW}}/etc/nginx/tunnel-subs.conf;
+
+    # sub_filter cannot rewrite a compressed body, and it must not claim a
+    # length it is about to change.
+    proxy_set_header Accept-Encoding "";
+    fastcgi_param HTTP_ACCEPT_ENCODING "";
+
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass unix:$t_sock;
+        fastcgi_index index.php;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO       $fastcgi_path_info;
+        # Cloudflare terminates TLS at the edge and forwards plain HTTP here.
+        # Without this the app thinks the request is insecure and emits http://
+        # asset URLs onto an https page, which browsers block as mixed content.
+        fastcgi_param HTTPS           "on";
+        fastcgi_param HTTP_X_FORWARDED_PROTO "https";
+        fastcgi_read_timeout 300;
+    }
+
+    location ~ /\.(?!well-known).* { deny all; }
+}

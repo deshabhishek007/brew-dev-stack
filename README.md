@@ -239,11 +239,29 @@ Opens a Cloudflare quick tunnel — a random `trycloudflare.com` URL, no account
 gone when you press ctrl-c. This is how you test Stripe, Twilio or GitHub callbacks
 against a local site.
 
-`--http-host-header` is set so the wildcard vhost still matches; without it cloudflared
-forwards the public hostname and nothing resolves.
-
 **This makes the site reachable by anyone with the URL.** Local sites often run with no
 credentials — do not tunnel one holding anything you would not publish.
+
+### Why tunnelled sites are not broken
+
+WordPress stores absolute URLs in the database — `siteurl`, `home`, and inside post
+content. Laravel has `APP_URL`. Reached on a tunnel address, a site would emit asset URLs
+for its `.test` name, which the visitor cannot resolve: the page loads completely
+unstyled.
+
+The tunnel vhost rewrites the local hostname out of every response with `sub_filter`, so
+**nothing in your site or database changes**. It also catches URLs baked into post
+content, which `WP_HOME`/`WP_SITEURL` cannot reach.
+
+Three rules are generated, and the order matters — `//site.test` is a substring of
+`http://site.test`, so the scheme'd forms are replaced first. WordPress emits the
+protocol-relative form for its `dns-prefetch` hint, which a rule for `http://` and
+`https://` alone would silently miss.
+
+`Accept-Encoding` is cleared, because `sub_filter` cannot rewrite a compressed body: if
+PHP gzips its own output the substitution quietly does nothing. The vhost also sets
+`HTTPS on`, since Cloudflare terminates TLS and forwards plain HTTP — without it the app
+emits `http://` assets onto an `https` page and browsers block them.
 
 ## Daily use
 
