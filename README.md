@@ -39,10 +39,16 @@ cd brew-dev-stack
 ./install.sh
 ```
 
+See exactly what it would change first:
+
+```bash
+./install.sh --dry-run
+```
+
 Then follow the three printed steps (they need `sudo`, so the script does not run
 them for you): trust the CA, add the resolver file, start the services.
 
-Options:
+Options — `./install.sh --help` lists them all:
 
 ```bash
 SITES_DIR=~/code TLD=localdev PHP_VERSION=8.4 ./install.sh

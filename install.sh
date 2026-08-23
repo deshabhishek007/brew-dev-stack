@@ -14,18 +14,61 @@ TLD="${TLD:-test}"
 PHP_VERSION="${PHP_VERSION:-8.3}"
 WITH_MYSQL="${WITH_MYSQL:-1}"
 WITH_PHPMYADMIN="${WITH_PHPMYADMIN:-1}"
+DRY_RUN="${DRY_RUN:-0}"
+
+usage() {
+  cat <<'EOF'
+brew-dev-stack — a self-owned local PHP dev environment on Homebrew.
+nginx + dnsmasq + php-fpm + mkcert, optionally MySQL and phpMyAdmin.
+
+Serves every directory under your sites folder at https://<name>.test
+
+Usage:
+  ./install.sh [options]
+
+Options:
+  -n, --dry-run     Show what would change without modifying anything
+  -h, --help        This message
+
+Environment:
+  SITES_DIR         Project directory        (default: ~/sites)
+  TLD               Local TLD, no dot        (default: test)
+  PHP_VERSION       Homebrew PHP version     (default: 8.3)
+  WITH_MYSQL        Install and tune MySQL   (default: 1)
+  WITH_PHPMYADMIN   Install phpMyAdmin       (default: 1)
+
+Examples:
+  ./install.sh --dry-run
+  SITES_DIR=~/code TLD=localdev PHP_VERSION=8.4 ./install.sh
+  WITH_MYSQL=0 WITH_PHPMYADMIN=0 ./install.sh
+
+The three steps that need sudo (trusting the CA, the /etc/resolver entry, and
+starting nginx/dnsmasq) are printed at the end for you to run yourself.
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    -n|--dry-run) DRY_RUN=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PHPSHORT="${PHP_VERSION//./}"
 GROUP="$(id -gn)"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
+dry()   { printf '  \033[36m→\033[0m would %s\n' "$*"; }
+is_dry() { [[ "$DRY_RUN" == "1" ]]; }
 info()  { printf '  %s\n' "$*"; }
 ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn()  { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()   { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- preflight -------------------------------------------------------------
+is_dry && bold "DRY RUN — nothing will be modified"
 bold "Preflight"
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS only."
 command -v brew >/dev/null || die "Homebrew not found. See https://brew.sh"
@@ -52,13 +95,16 @@ for f in "${FORMULAE[@]}"; do
   if brew list --versions "$f" >/dev/null 2>&1; then
     ok "$f (already installed)"
   else
-    info "installing $f…"
-    brew install "$f" >/dev/null && ok "$f"
+    if is_dry; then dry "brew install $f"; else
+      info "installing $f…"
+      brew install "$f" >/dev/null && ok "$f"
+    fi
   fi
 done
 
 # --- render templates ------------------------------------------------------
 render() {  # render <template> <destination>
+  if is_dry; then dry "write $2"; return 0; fi
   sed -e "s|{{BREW}}|$BREW|g" \
       -e "s|{{SITES}}|$SITES_DIR|g" \
       -e "s|{{TLD}}|$TLD|g" \
@@ -67,7 +113,7 @@ render() {  # render <template> <destination>
       -e "s|{{PHPSHORT}}|$PHPSHORT|g" \
       "$1" > "$2"
 }
-backup() { [[ -f "$1" ]] && cp "$1" "$1.bak-$(date +%Y%m%d%H%M%S)" && info "backed up $(basename "$1")"; return 0; }
+backup() { is_dry && { [[ -f "$1" ]] && dry "back up $1"; return 0; }; [[ -f "$1" ]] && cp "$1" "$1.bak-$(date +%Y%m%d%H%M%S)" && info "backed up $(basename "$1")"; return 0; }
 
 bold "Writing configuration"
 mkdir -p "$BREW"/etc/nginx/{servers,certs} "$BREW"/var/log/nginx "$BREW"/var/run "$BREW"/etc/dnsmasq.d
@@ -85,7 +131,10 @@ ok "dnsmasq"
 # php-fpm: unix socket avoids port collisions with other PHP versions.
 FPM_POOL="$BREW/etc/php/$PHP_VERSION/php-fpm.d/www.conf"
 FPM_CONF="$BREW/etc/php/$PHP_VERSION/php-fpm.conf"
-if [[ -f "$FPM_POOL" ]]; then
+if is_dry; then
+  dry "point $FPM_POOL at $BREW/var/run/php${PHPSHORT}-fpm.sock"
+  dry "set per-version error log in $FPM_CONF"
+elif [[ -f "$FPM_POOL" ]]; then
   backup "$FPM_POOL"
   /usr/bin/sed -i '' \
     -e "s|^listen = .*|listen = $BREW/var/run/php${PHPSHORT}-fpm.sock|" \
@@ -106,12 +155,18 @@ else
 fi
 
 if [[ "$WITH_MYSQL" == "1" ]]; then
-  backup "$BREW/etc/my.cnf"
-  cp "$SCRIPT_DIR/config/my.cnf.template" "$BREW/etc/my.cnf"
-  ok "mysql (tuned for development)"
+  if is_dry; then dry "write $BREW/etc/my.cnf (development tuning)"; else
+    backup "$BREW/etc/my.cnf"
+    cp "$SCRIPT_DIR/config/my.cnf.template" "$BREW/etc/my.cnf"
+    ok "mysql (tuned for development)"
+  fi
 fi
 
 if [[ "$WITH_PHPMYADMIN" == "1" ]]; then
+  if is_dry; then
+    dry "write $BREW/etc/phpmyadmin.config.inc.php with a fresh 32-char blowfish_secret"
+    dry "symlink $SITES_DIR/phpmyadmin -> $BREW/share/phpmyadmin"
+  else
   SECRET="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
   PMA_CFG="$BREW/etc/phpmyadmin.config.inc.php"
   backup "$PMA_CFG"
@@ -121,6 +176,7 @@ if [[ "$WITH_PHPMYADMIN" == "1" ]]; then
   mkdir -p "$BREW/var/tmp/phpmyadmin" && chmod 700 "$BREW/var/tmp/phpmyadmin"
   ln -sfn "$BREW/share/phpmyadmin" "$SITES_DIR/phpmyadmin"
   ok "phpmyadmin → https://phpmyadmin.$TLD (symlinked into $SITES_DIR)"
+  fi
 fi
 
 # --- certificates ----------------------------------------------------------
@@ -129,9 +185,14 @@ if [[ ! -d "$(mkcert -CAROOT 2>/dev/null)" ]] || ! security find-certificate -c 
   warn "mkcert CA is not installed in your trust store yet."
   info "Run:  mkcert -install     (asks for your password)"
 fi
-"$SCRIPT_DIR/bin/site-cert-regen" || warn "cert generation reported a problem"
+if is_dry; then
+  dry "generate $BREW/etc/nginx/certs/local-$TLD.pem with one SAN per project"
+else
+  "$SCRIPT_DIR/bin/site-cert-regen" || warn "cert generation reported a problem"
+fi
 
 # --- done ------------------------------------------------------------------
+is_dry && { echo; bold "Dry run complete — no changes made."; echo "  Re-run without --dry-run to apply."; exit 0; }
 bold "Remaining steps (these need sudo — run them yourself)"
 cat <<EOF
 
