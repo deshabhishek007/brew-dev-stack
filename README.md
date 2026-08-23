@@ -64,6 +64,33 @@ bin/devstack reload     # regenerate the certificate + reload nginx
 bin/devstack logs       # tail the error log
 ```
 
+### Switching PHP version
+
+```bash
+bin/devstack php            # show the active version
+bin/devstack php 8.4        # install if needed, then switch
+```
+
+This installs `php@8.4` if it is missing, gives it its own socket and error log,
+repoints the nginx vhost at that socket, stops the previous version's FPM, and
+**relinks the CLI to match**. A CLI/FPM mismatch is easy to miss and produces
+dependencies resolved against one version but executed under another. Reload nginx
+afterwards, as the command reminds you.
+
+### MySQL performance_schema
+
+```bash
+bin/devstack mysql-perf         # show configured + running state and current memory
+bin/devstack mysql-perf off     # ~200 MB back
+bin/devstack mysql-perf on      # when you need query analysis
+```
+
+Toggling restarts MySQL and waits for the socket to actually accept connections —
+`brew services restart` returns before MySQL is ready, so a fixed sleep is unreliable.
+
+With it off, `performance_schema.*` and `information_schema.global_variables` are
+unavailable; use `SHOW VARIABLES` and `SHOW STATUS` instead.
+
 After creating a new project directory, run `bin/devstack reload` so the certificate
 covers the new hostname.
 

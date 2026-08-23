@@ -19,6 +19,9 @@ usage() {
 Usage: devstack <command>
 
   status     show what is running and whether the stack answers
+  php [ver]  show the active PHP version, or switch to it (e.g. devstack php 8.4)
+  mysql-perf [on|off]
+             show or toggle MySQL performance_schema (~200 MB when ON)
   start      start php-fpm, dnsmasq, nginx (the last two need sudo)
   stop       stop them
   reload     regenerate the certificate and reload nginx
@@ -107,8 +110,143 @@ cmd_doctor() {
     || warn "run 'sudo nginx -t' for a full config check"
 }
 
+
+# --- php version -----------------------------------------------------------
+current_fpm_version() {
+  # Read the version nginx is actually wired to, not what the env says.
+  # -E for portability: macOS ships BSD sed, which lacks the GNU \+ operator.
+  sed -nE 's|.*fastcgi_pass unix:.*/php([0-9]+)-fpm\.sock.*|\1|p' \
+      "$BREW/etc/nginx/servers/local-dev.conf" 2>/dev/null | head -1
+}
+
+cmd_php() {
+  local target="${1:-}"
+  local short cur
+  cur="$(current_fpm_version)"
+
+  if [[ -z "$target" ]]; then
+    echo "PHP"
+    [[ -n "$cur" ]] && ok "nginx serves via php${cur}-fpm.sock" || bad "nginx has no php-fpm socket configured"
+    echo "  cli:       $(php -v 2>/dev/null | head -1 || echo 'not on PATH')"
+    echo
+    echo "Installed Homebrew PHP versions:"
+    brew list --formula 2>/dev/null | grep -E '^php(@[0-9.]+)?$' | sed 's/^/  /'
+    echo
+    echo "Switch with:  devstack php 8.4"
+    return 0
+  fi
+
+  [[ "$target" =~ ^[0-9]+\.[0-9]+$ ]] || { bad "Version must look like 8.3 or 8.4"; exit 1; }
+  short="${target//./}"
+
+  if ! brew list --versions "php@$target" >/dev/null 2>&1; then
+    echo "Installing php@$target…"
+    brew install "php@$target"
+  fi
+
+  local pool="$BREW/etc/php/$target/php-fpm.d/www.conf"
+  local conf="$BREW/etc/php/$target/php-fpm.conf"
+  [[ -f "$pool" ]] || { bad "No pool config at $pool"; exit 1; }
+
+  cp "$pool" "$pool.bak-$(date +%Y%m%d%H%M%S)"
+  /usr/bin/sed -i '' \
+    -e "s|^listen = .*|listen = $BREW/var/run/php${short}-fpm.sock|" \
+    -e "s|^;\{0,1\}listen.owner = .*|listen.owner = $USER|" \
+    -e "s|^;\{0,1\}listen.group = .*|listen.group = $(id -gn)|" \
+    -e "s|^;\{0,1\}listen.mode = .*|listen.mode = 0660|" "$pool"
+  cp "$conf" "$conf.bak-$(date +%Y%m%d%H%M%S)"
+  /usr/bin/sed -i '' "s|^;\{0,1\}error_log = .*|error_log = $BREW/var/log/php-fpm-${target}.log|" "$conf"
+  ok "php@$target configured on its own socket and log"
+
+  # Point nginx at the new socket.
+  local vhost="$BREW/etc/nginx/servers/local-dev.conf"
+  cp "$vhost" "$vhost.bak-$(date +%Y%m%d%H%M%S)"
+  /usr/bin/sed -i '' "s|php[0-9]\{2,3\}-fpm\.sock|php${short}-fpm.sock|" "$vhost"
+  ok "nginx vhost points at php${short}-fpm.sock"
+
+  # Stop the version we were using, start the new one.
+  if [[ -n "$cur" && "$cur" != "$short" ]]; then
+    local oldver="${cur:0:1}.${cur:1}"
+    brew services stop "php@$oldver" >/dev/null 2>&1 && ok "stopped php@$oldver"
+  fi
+  brew services start "php@$target" >/dev/null && ok "started php@$target"
+
+  # Keep the CLI on the same version — a CLI/FPM mismatch silently produces
+  # dependencies resolved against one version and executed under another.
+  brew unlink php >/dev/null 2>&1 || true
+  for v in $(brew list --formula 2>/dev/null | grep -E '^php@[0-9.]+$'); do
+    [[ "$v" == "php@$target" ]] || brew unlink "$v" >/dev/null 2>&1 || true
+  done
+  brew link --overwrite --force "php@$target" >/dev/null 2>&1 && ok "cli php linked to $target"
+
+  echo
+  echo "  cli: $(php -v 2>/dev/null | head -1)"
+  warn "Reload nginx to serve through the new socket:  sudo nginx -s reload"
+}
+
+# --- mysql performance_schema ---------------------------------------------
+cmd_mysql_perf() {
+  local action="${1:-}" cnf="$BREW/etc/my.cnf"
+  [[ -f "$cnf" ]] || { bad "No $cnf"; exit 1; }
+
+  local state="ON (MySQL default)"
+  grep -qE '^\s*performance_schema\s*=\s*OFF' "$cnf" && state="OFF"
+
+  local live=""
+  live="$(mysql -N -e "SHOW VARIABLES LIKE 'performance_schema'" 2>/dev/null | awk '{print $2}')"
+
+  if [[ -z "$action" ]]; then
+    echo "MySQL performance_schema"
+    echo "  configured: $state"
+    [[ -n "$live" ]] && echo "  running:    $live" || warn "MySQL not reachable — cannot read live value"
+    local pid; pid="$(pgrep -x mysqld | head -1)"
+    if [[ -n "$pid" ]] && command -v footprint >/dev/null 2>&1; then
+      echo "  memory:     $(footprint -p "$pid" 2>/dev/null | grep -m1 'phys_footprint:' | grep -oE '[0-9.]+ [KMG]B')"
+    fi
+    echo
+    echo "  ON  costs roughly 200 MB of pre-allocated memory, whether or not you query it."
+    echo "  Toggle with:  devstack mysql-perf on|off"
+    return 0
+  fi
+
+  cp "$cnf" "$cnf.bak-$(date +%Y%m%d%H%M%S)"
+  case "$action" in
+    off)
+      if grep -qE '^\s*#\s*performance_schema' "$cnf"; then
+        /usr/bin/sed -i '' 's|^\s*#\s*performance_schema.*|performance_schema      = OFF|' "$cnf"
+      elif ! grep -qE '^\s*performance_schema' "$cnf"; then
+        printf '\nperformance_schema      = OFF\n' >> "$cnf"
+      fi
+      ok "performance_schema = OFF"
+      ;;
+    on)
+      /usr/bin/sed -i '' 's|^\s*performance_schema\s*=\s*OFF.*|# performance_schema    = OFF  (enabled)|' "$cnf"
+      ok "performance_schema enabled (MySQL default)"
+      ;;
+    *) bad "Use: devstack mysql-perf on|off"; exit 1 ;;
+  esac
+
+  echo "Restarting MySQL…"
+  brew services restart mysql >/dev/null
+  # MySQL reports "started" before the socket is ready; poll rather than sleep.
+  local i
+  for i in $(seq 1 30); do mysql -N -e "SELECT 1" >/dev/null 2>&1 && break; sleep 1; done
+  if mysql -N -e "SELECT 1" >/dev/null 2>&1; then
+    ok "MySQL up (performance_schema = $(mysql -N -e "SHOW VARIABLES LIKE 'performance_schema'" 2>/dev/null | awk '{print $2}'))"
+    local pid; pid="$(pgrep -x mysqld | head -1)"
+    [[ -n "$pid" ]] && command -v footprint >/dev/null 2>&1 && \
+      echo "  memory: $(footprint -p "$pid" 2>/dev/null | grep -m1 'phys_footprint:' | grep -oE '[0-9.]+ [KMG]B')"
+  else
+    bad "MySQL did not come back — check $cnf and its backup"
+  fi
+  [[ "$action" == "off" ]] && warn "performance_schema.* and information_schema.global_variables are now unavailable; use SHOW VARIABLES / SHOW STATUS"
+  return 0
+}
+
 case "${1:-}" in
   status) cmd_status ;;
+  php)    shift; cmd_php "${1:-}" ;;
+  mysql-perf) shift; cmd_mysql_perf "${1:-}" ;;
   start)  cmd_start ;;
   stop)   cmd_stop ;;
   reload) cmd_reload ;;
