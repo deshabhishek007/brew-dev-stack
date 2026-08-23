@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# Regenerate the local development certificate.
+#
+# Why not a wildcard: a "*.test" certificate puts the wildcard directly under a
+# TLD, which BOTH OpenSSL and Apple's TLS stack reject — the same rule that
+# blocks "*.com". `openssl s_client` will happily display such a cert, so it
+# passes a naive check and then fails in every real client. We therefore
+# enumerate one explicit SAN per project directory.
+#
+# Re-run after adding a project, then: sudo nginx -s reload
+#
+set -euo pipefail
+
+SITES_DIR="${SITES_DIR:-$HOME/sites}"
+TLD="${TLD:-test}"
+BREW="$(brew --prefix)"
+CERTDIR="$BREW/etc/nginx/certs"
+
+command -v mkcert >/dev/null || { echo "mkcert not installed (brew install mkcert)" >&2; exit 1; }
+mkdir -p "$CERTDIR"
+
+names=("$TLD" localhost 127.0.0.1 ::1)
+skipped=()
+
+for d in "$SITES_DIR"/*/; do
+  [[ -d "$d" ]] || continue
+  n="$(basename "$d")"
+  # Valid DNS label only: letters, digits, hyphens; no spaces, no leading/trailing dash.
+  if printf '%s' "$n" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$'; then
+    names+=("${n}.${TLD}")
+  else
+    skipped+=("$n")
+  fi
+done
+
+echo "Generating certificate for ${#names[@]} names…"
+cd "$CERTDIR"
+mkcert -cert-file "local-${TLD}.pem" -key-file "local-${TLD}-key.pem" "${names[@]}"
+
+if (( ${#skipped[@]} )); then
+  echo
+  echo "Skipped ${#skipped[@]} directory name(s) that are not valid hostnames:"
+  printf '  %s\n' "${skipped[@]}"
+  echo "  (rename them without spaces to have them served)"
+fi
+
+echo
+echo "Reload nginx to pick it up:  sudo nginx -s reload"

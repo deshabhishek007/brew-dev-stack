@@ -1,0 +1,5 @@
+# Resolve every *.{{TLD}} hostname to localhost.
+address=/.{{TLD}}/127.0.0.1
+# Answer only on loopback; do not act as a LAN DNS server.
+listen-address=127.0.0.1
+bind-interfaces

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# devstack — start/stop/status helper for brew-dev-stack.
+#
+set -euo pipefail
+
+TLD="${TLD:-test}"
+PHP_VERSION="${PHP_VERSION:-8.3}"
+SITES_DIR="${SITES_DIR:-$HOME/sites}"
+BREW="$(brew --prefix)"
+PHPSHORT="${PHP_VERSION//./}"
+
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+
+usage() {
+  cat <<EOF
+Usage: devstack <command>
+
+  status     show what is running and whether the stack answers
+  start      start php-fpm, dnsmasq, nginx (the last two need sudo)
+  stop       stop them
+  reload     regenerate the certificate and reload nginx
+  logs       tail the nginx error log
+  doctor     diagnose the usual failure modes
+EOF
+}
+
+cmd_status() {
+  echo "Services"
+  for s in "php@$PHP_VERSION" mysql postgresql@16; do
+    if brew services list 2>/dev/null | grep -qE "^${s//./\\.} +started"; then ok "$s"; else warn "$s not started"; fi
+  done
+  # nginx rewrites its argv to "nginx: master process …", so `pgrep -x nginx`
+  # finds nothing even while it is serving. Match the master line instead.
+  pgrep -f 'nginx: master' >/dev/null && ok "nginx running" || bad "nginx not running"
+  pgrep -f "$BREW/opt/dnsmasq" >/dev/null && ok "dnsmasq running" || bad "dnsmasq not running"
+
+  echo
+  echo "Listeners"
+  lsof -nP -iTCP:80 -iTCP:443 -sTCP:LISTEN 2>/dev/null | awk '/LISTEN/{print "  "$1, $9}' | sort -u || warn "nothing on 80/443"
+
+  echo
+  echo "PHP socket"
+  [[ -S "$BREW/var/run/php${PHPSHORT}-fpm.sock" ]] && ok "php${PHPSHORT}-fpm.sock" || bad "socket missing"
+
+  echo
+  echo "Sites in $SITES_DIR"
+  local n=0
+  for d in "$SITES_DIR"/*/; do [[ -d "$d" ]] && n=$((n+1)); done
+  echo "  $n project(s)"
+}
+
+cmd_start() {
+  brew services start "php@$PHP_VERSION"
+  echo "dnsmasq and nginx need root:"
+  sudo brew services start dnsmasq
+  sudo brew services start nginx
+}
+
+cmd_stop() {
+  brew services stop "php@$PHP_VERSION" || true
+  sudo brew services stop nginx || true
+  sudo brew services stop dnsmasq || true
+}
+
+cmd_reload() {
+  "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen"
+  sudo nginx -s reload && ok "nginx reloaded"
+}
+
+cmd_logs() { tail -f "$BREW/var/log/nginx/${TLD}-error.log"; }
+
+cmd_doctor() {
+  echo "Checks"
+  [[ -f "/etc/resolver/$TLD" ]] && ok "/etc/resolver/$TLD present" \
+    || bad "/etc/resolver/$TLD missing — .$TLD will not resolve"
+
+  if dig +short +time=2 +tries=1 @127.0.0.1 "probe.$TLD" 2>/dev/null | grep -q 127.0.0.1; then
+    ok "dnsmasq answers *.$TLD"
+  else
+    bad "dnsmasq is not answering *.$TLD"
+  fi
+
+  security find-certificate -c mkcert /Library/Keychains/System.keychain >/dev/null 2>&1 \
+    && ok "mkcert CA trusted" || bad "mkcert CA not trusted — run: mkcert -install"
+
+  local cert="$BREW/etc/nginx/certs/local-${TLD}.pem"
+  if [[ -f "$cert" ]]; then
+    local sans; sans=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | grep -c 'DNS' || true)
+    ok "certificate present ($sans SANs)"
+    if openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | grep -q "DNS:\*\.$TLD"; then
+      bad "certificate uses a *.$TLD wildcard — clients reject wildcards directly under a TLD"
+    fi
+  else
+    bad "certificate missing — run site-cert-regen"
+  fi
+
+  # A root-owned shared php-fpm log makes launchd fail php@X with status 78.
+  local shared="$BREW/var/log/php-fpm.log"
+  if [[ -f "$shared" && ! -w "$shared" ]]; then
+    bad "$shared is not writable by you — php-fpm may fail to start (status 78)"
+  fi
+
+  nginx -t 2>&1 | grep -q 'syntax is ok' && ok "nginx config syntax ok" \
+    || warn "run 'sudo nginx -t' for a full config check"
+}
+
+case "${1:-}" in
+  status) cmd_status ;;
+  start)  cmd_start ;;
+  stop)   cmd_stop ;;
+  reload) cmd_reload ;;
+  logs)   cmd_logs ;;
+  doctor) cmd_doctor ;;
+  *) usage; exit 1 ;;
+esac

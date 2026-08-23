@@ -1,0 +1,53 @@
+# Local *.{{TLD}} development — one server block serves every project.
+#
+#   foo.{{TLD}}  ->  {{SITES}}/foo          (WordPress / plain PHP)
+#   bar.{{TLD}}  ->  {{SITES}}/bar/public   (auto-detected: Laravel & friends)
+#
+# Bound to 127.0.0.1 deliberately: these sites often run with weak or no
+# credentials (phpMyAdmin, local WP admins). Listening on all interfaces
+# exposes them to anyone on the same network via a crafted Host header.
+
+server {
+    listen 127.0.0.1:80;
+    listen 127.0.0.1:443 ssl;
+    http2 on;
+
+    server_name ~^(?<sub>[^.]+)\.{{TLD}}$;
+
+    ssl_certificate     {{BREW}}/etc/nginx/certs/local-{{TLD}}.pem;
+    ssl_certificate_key {{BREW}}/etc/nginx/certs/local-{{TLD}}-key.pem;
+
+    # Auto-detect docroot: use public/ when present, else the project root.
+    set $docroot {{SITES}}/$sub;
+    if (-d {{SITES}}/$sub/public) {
+        set $docroot {{SITES}}/$sub/public;
+    }
+    root $docroot;
+    index index.php index.html;
+
+    charset utf-8;
+    client_max_body_size 128M;
+
+    access_log {{BREW}}/var/log/nginx/{{TLD}}-access.log;
+    error_log  {{BREW}}/var/log/nginx/{{TLD}}-error.log;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass unix:{{BREW}}/var/run/php{{PHPSHORT}}-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO       $fastcgi_path_info;
+        fastcgi_param HTTPS           $https if_not_empty;
+        fastcgi_read_timeout 300;
+    }
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+    location ~ /\.(?!well-known).* { deny all; }
+}
