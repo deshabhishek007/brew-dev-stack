@@ -219,18 +219,23 @@ bin/devstack logs       # tail the error log
 diagnosis — it checks the things that actually break (resolver file, dnsmasq answering,
 CA trust, certificate shape, php-fpm log ownership) and tells you what to do about each.
 
-### Switching PHP version
+### PHP versions, globally or per site
 
 ```bash
-bin/devstack php            # show the active version
-bin/devstack php 8.4        # install if needed, then switch
+bin/devstack php                      # what is in use, and any overrides
+bin/devstack php 8.4                  # change the default for every site
+bin/devstack php 8.2 --site=legacy    # pin one site
+bin/devstack php --site=legacy        # back to the default
 ```
 
-This installs `php@8.4` if it is missing, gives it its own socket and error log,
-repoints the nginx vhost at that socket, stops the previous version's FPM, and
-**relinks the CLI to match**. A CLI/FPM mismatch is easy to miss and produces
-dependencies resolved against one version but executed under another. Reload nginx
-afterwards, as the command reminds you.
+Each installed version runs its own php-fpm pool on its own socket, and nginx picks
+between them with a `map` keyed on the hostname. Changing a site's PHP version is a
+config reload, not a new vhost — several versions serve side by side.
+
+Changing the **default** also relinks the CLI to match. A CLI/FPM mismatch is easy to
+miss and resolves dependencies against one version while running them under another.
+
+Xdebug is built per version, so re-run `install xdebug` after switching.
 
 ### MySQL performance_schema
 

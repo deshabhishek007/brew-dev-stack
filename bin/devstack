@@ -47,7 +47,8 @@ Stack
 
 Configure
   config [--show]           your name, email, admin username
-  php [version]             show or switch the PHP version
+  php [version] [--site=<name>]
+                            show, change the default, or pin one site
   mysql perf [on|off]       performance_schema (~200 MB when ON)
   install adminer           web UI for MySQL, PostgreSQL and SQLite
   install mailpit           catch all outgoing mail (nothing reaches real inboxes)
@@ -198,6 +199,66 @@ cmd_doctor() {
 }
 
 
+# --- php version map -------------------------------------------------------
+PHPMAP="$BREW/etc/nginx/php-versions.map"
+
+php_sock() { printf '%s/var/run/php%s-fpm.sock' "$BREW" "${1//./}"; }
+
+# Make sure php@<ver> exists, listens on its own socket and its own log, and
+# is running. Safe to call repeatedly.
+php_prepare() {
+  # NOTE: `local a=x b=$a` does not work — local expands all its arguments
+  # before any assignment takes effect, so b sees an unset a.
+  local ver="$1"
+  local short="${ver//./}"
+  brew list --versions "php@$ver" >/dev/null 2>&1 || { echo "Installing php@$ver…"; brew install "php@$ver" >/dev/null; }
+  local pool="$BREW/etc/php/$ver/php-fpm.d/www.conf" conf="$BREW/etc/php/$ver/php-fpm.conf"
+  [[ -f "$pool" ]] || { bad "no pool config at $pool"; return 1; }
+  /usr/bin/sed -i '' \
+    -e "s|^listen = .*|listen = $BREW/var/run/php${short}-fpm.sock|" \
+    -e "s|^;\{0,1\}listen.owner = .*|listen.owner = $USER|" \
+    -e "s|^;\{0,1\}listen.group = .*|listen.group = $(id -gn)|" \
+    -e "s|^;\{0,1\}listen.mode = .*|listen.mode = 0660|" "$pool"
+  /usr/bin/sed -i '' "s|^;\{0,1\}error_log = .*|error_log = $BREW/var/log/php-fpm-${ver}.log|" "$conf"
+  for stale in "$BREW/etc/php/$ver/php-fpm.d/"*valet*.conf; do
+    [[ -e "$stale" ]] && mv "$stale" "$stale.disabled"
+  done
+  # Always restart: `start` on an already-running service succeeds without
+  # reloading, so the pool changes above would never take effect.
+  brew services restart "php@$ver" >/dev/null 2>&1
+  local i
+  for i in $(seq 1 20); do [[ -S "$(php_sock "$ver")" ]] && break; sleep 1; done
+  [[ -S "$(php_sock "$ver")" ]] || { bad "php@$ver socket never appeared — see $BREW/var/log/php-fpm-${ver}.log"; return 1; }
+  return 0
+}
+
+php_map_default() {  # current default version, or empty
+  [[ -f "$PHPMAP" ]] || return 0
+  sed -nE 's|^[[:space:]]*default[[:space:]]+.*/php([0-9]+)-fpm\.sock;.*|\1|p' "$PHPMAP" | head -1
+}
+
+php_map_write() {  # php_map_write <site|default> <version>
+  local key="$1" ver="$2" sock
+  sock="$(php_sock "$ver")"
+  mkdir -p "$(dirname "$PHPMAP")"
+  [[ -f "$PHPMAP" ]] || printf 'default %s;\n' "$(php_sock "$PHP_VERSION")" > "$PHPMAP"
+  # Rewrite without the key, then append it — keeps the file idempotent.
+  local tmp; tmp="$(mktemp)"
+  grep -vE "^[[:space:]]*${key}[[:space:]]" "$PHPMAP" > "$tmp" 2>/dev/null || true
+  printf '%s %s;\n' "$key" "$sock" >> "$tmp"
+  # default must exist and sort first for readability
+  grep -qE '^[[:space:]]*default[[:space:]]' "$tmp" || printf 'default %s;\n' "$(php_sock "$PHP_VERSION")" >> "$tmp"
+  { grep -E '^[[:space:]]*default[[:space:]]' "$tmp"; grep -vE '^[[:space:]]*default[[:space:]]' "$tmp" | sort; } > "$PHPMAP"
+  rm -f "$tmp"
+}
+
+php_map_remove() {  # drop a site's override
+  [[ -f "$PHPMAP" ]] || return 0
+  local tmp; tmp="$(mktemp)"
+  grep -vE "^[[:space:]]*${1}[[:space:]]" "$PHPMAP" > "$tmp" 2>/dev/null || true
+  mv "$tmp" "$PHPMAP"
+}
+
 # --- php version -----------------------------------------------------------
 current_fpm_version() {
   # Read the version nginx is actually wired to, not what the env says.
@@ -207,68 +268,74 @@ current_fpm_version() {
 }
 
 cmd_php() {
-  local target="${1:-}"
-  local short cur
-  cur="$(current_fpm_version)"
+  local target="" site=""
+  for a in "$@"; do
+    case "$a" in
+      --site=*) site="${a#--site=}" ;;
+      -*)       bad "Unknown option: $a"; exit 1 ;;
+      *)        target="$a" ;;
+    esac
+  done
 
-  if [[ -z "$target" ]]; then
+  # No arguments: report.
+  if [[ -z "$target" && -z "$site" ]]; then
     echo "PHP"
-    [[ -n "$cur" ]] && ok "nginx serves via php${cur}-fpm.sock" || bad "nginx has no php-fpm socket configured"
-    echo "  cli:       $(php -v 2>/dev/null | head -1 || echo 'not on PATH')"
+    echo "  default:  $(php_map_default | sed 's|^\(.\)|\1.|' 2>/dev/null || echo "$PHP_VERSION")  (serves every site without an override)"
+    echo "  cli:      $(php -v 2>/dev/null | head -1 || echo 'not on PATH')"
+    if [[ -f "$PHPMAP" ]]; then
+      local overrides; overrides="$(grep -vE '^[[:space:]]*default[[:space:]]' "$PHPMAP" 2>/dev/null || true)"
+      if [[ -n "$overrides" ]]; then
+        echo
+        echo "  Per-site overrides:"
+        while IFS= read -r line; do
+          [[ -n "$line" ]] || continue
+          local k v
+          k="$(awk '{print $1}' <<<"$line")"
+          v="$(sed -nE 's|.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p' <<<"$line")"
+          printf "    %-28s %s\n" "$k" "$v"
+        done <<<"$overrides"
+      fi
+    fi
     echo
-    echo "Installed Homebrew PHP versions:"
+    echo "Installed:"
     brew list --formula 2>/dev/null | grep -E '^php(@[0-9.]+)?$' | sed 's/^/  /'
     echo
-    echo "Switch with:  devstack php 8.4"
+    echo "  devstack php 8.4                 change the default"
+    echo "  devstack php 8.2 --site=legacy   pin one site"
+    echo "  devstack php --site=legacy       remove that site's override"
+    return 0
+  fi
+
+  # --site with no version: remove the override.
+  if [[ -z "$target" && -n "$site" ]]; then
+    [[ -d "$SITES_DIR/$site" ]] || { bad "No such site: $site"; exit 1; }
+    php_map_remove "$site"
+    ok "$site now uses the default PHP"
+    warn "Reload nginx:  sudo nginx -s reload"
     return 0
   fi
 
   [[ "$target" =~ ^[0-9]+\.[0-9]+$ ]] || { bad "Version must look like 8.3 or 8.4"; exit 1; }
-  short="${target//./}"
+  php_prepare "$target" || exit 1
 
-  if ! brew list --versions "php@$target" >/dev/null 2>&1; then
-    echo "Installing php@$target…"
-    brew install "php@$target"
+  if [[ -n "$site" ]]; then
+    [[ -d "$SITES_DIR/$site" ]] || { bad "No such site: $site"; exit 1; }
+    php_map_write "$site" "$target"
+    ok "$site pinned to PHP $target"
+  else
+    php_map_write default "$target"
+    ok "default PHP is now $target"
+    # Keep the CLI aligned with the default; a mismatch resolves dependencies
+    # against one version and runs them under another.
+    brew unlink php >/dev/null 2>&1 || true
+    local v
+    for v in $(brew list --formula 2>/dev/null | grep -E '^php@[0-9.]+$'); do
+      [[ "$v" == "php@$target" ]] || brew unlink "$v" >/dev/null 2>&1 || true
+    done
+    brew link --overwrite --force "php@$target" >/dev/null 2>&1 && ok "cli php linked to $target"
+    php -m 2>/dev/null | grep -qi '^xdebug$' || warn "Xdebug is built per version — re-run: devstack install xdebug"
   fi
-
-  local pool="$BREW/etc/php/$target/php-fpm.d/www.conf"
-  local conf="$BREW/etc/php/$target/php-fpm.conf"
-  [[ -f "$pool" ]] || { bad "No pool config at $pool"; exit 1; }
-
-  cp "$pool" "$pool.bak-$(date +%Y%m%d%H%M%S)"
-  /usr/bin/sed -i '' \
-    -e "s|^listen = .*|listen = $BREW/var/run/php${short}-fpm.sock|" \
-    -e "s|^;\{0,1\}listen.owner = .*|listen.owner = $USER|" \
-    -e "s|^;\{0,1\}listen.group = .*|listen.group = $(id -gn)|" \
-    -e "s|^;\{0,1\}listen.mode = .*|listen.mode = 0660|" "$pool"
-  cp "$conf" "$conf.bak-$(date +%Y%m%d%H%M%S)"
-  /usr/bin/sed -i '' "s|^;\{0,1\}error_log = .*|error_log = $BREW/var/log/php-fpm-${target}.log|" "$conf"
-  ok "php@$target configured on its own socket and log"
-
-  # Point nginx at the new socket.
-  local vhost="$BREW/etc/nginx/servers/local-dev.conf"
-  cp "$vhost" "$vhost.bak-$(date +%Y%m%d%H%M%S)"
-  /usr/bin/sed -i '' "s|php[0-9]\{2,3\}-fpm\.sock|php${short}-fpm.sock|" "$vhost"
-  ok "nginx vhost points at php${short}-fpm.sock"
-
-  # Stop the version we were using, start the new one.
-  if [[ -n "$cur" && "$cur" != "$short" ]]; then
-    local oldver="${cur:0:1}.${cur:1}"
-    brew services stop "php@$oldver" >/dev/null 2>&1 && ok "stopped php@$oldver"
-  fi
-  brew services start "php@$target" >/dev/null && ok "started php@$target"
-
-  # Keep the CLI on the same version — a CLI/FPM mismatch silently produces
-  # dependencies resolved against one version and executed under another.
-  brew unlink php >/dev/null 2>&1 || true
-  for v in $(brew list --formula 2>/dev/null | grep -E '^php@[0-9.]+$'); do
-    [[ "$v" == "php@$target" ]] || brew unlink "$v" >/dev/null 2>&1 || true
-  done
-  brew link --overwrite --force "php@$target" >/dev/null 2>&1 && ok "cli php linked to $target"
-
-  echo
-  echo "  cli: $(php -v 2>/dev/null | head -1)"
-  warn "Reload nginx to serve through the new socket:  sudo nginx -s reload"
+  warn "Reload nginx:  sudo nginx -s reload"
 }
 
 # --- mysql performance_schema ---------------------------------------------
@@ -902,7 +969,7 @@ case "${1:-}" in
   reload)  cmd_reload ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   config)  shift; cmd_config "${1:-}" ;;
-  php)     shift; cmd_php "${1:-}" ;;
+  php)     shift; cmd_php "$@" ;;
   mysql)   shift; cmd_mysql "$@" ;;
   install) shift; cmd_install "$@" ;;
   help|-h|--help) usage ;;
