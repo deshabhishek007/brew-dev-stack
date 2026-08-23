@@ -88,7 +88,7 @@ info "PHP: $PHP_VERSION   TLD: .$TLD"
 
 # --- packages --------------------------------------------------------------
 bold "Installing packages"
-FORMULAE=(nginx dnsmasq mkcert nss "php@${PHP_VERSION}")
+FORMULAE=(nginx dnsmasq mkcert nss wp-cli "php@${PHP_VERSION}")
 [[ "$WITH_MYSQL" == "1" ]] && FORMULAE+=(mysql)
 [[ "$WITH_PHPMYADMIN" == "1" ]] && FORMULAE+=(phpmyadmin)
 for f in "${FORMULAE[@]}"; do
@@ -167,7 +167,9 @@ if [[ "$WITH_PHPMYADMIN" == "1" ]]; then
     dry "write $BREW/etc/phpmyadmin.config.inc.php with a fresh 32-char blowfish_secret"
     dry "symlink $SITES_DIR/phpmyadmin -> $BREW/share/phpmyadmin"
   else
-  SECRET="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+  # Pipe-free: `tr | head -c` SIGPIPEs tr, which `set -o pipefail` turns into
+  # an abort. Intermittent, so it would have looked like a flaky installer.
+  SECRET="$(openssl rand -base64 48)"; SECRET="${SECRET//[^A-Za-z0-9]/}"; SECRET="${SECRET:0:32}"
   PMA_CFG="$BREW/etc/phpmyadmin.config.inc.php"
   backup "$PMA_CFG"
   sed -e "s|{{SECRET}}|$SECRET|" -e "s|{{BREW}}|$BREW|g" \

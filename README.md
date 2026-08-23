@@ -55,6 +55,33 @@ SITES_DIR=~/code TLD=localdev PHP_VERSION=8.4 ./install.sh
 WITH_MYSQL=0 WITH_PHPMYADMIN=0 ./install.sh
 ```
 
+## Creating a WordPress site
+
+One-time, so sites can be created without prompts afterwards:
+
+```bash
+bin/devstack config     # your name, email, admin username → ~/.config/brew-dev-stack/config
+```
+
+Then, per site:
+
+```bash
+bin/devstack new myblog
+```
+
+That creates the database and a **dedicated database user** (not root, so one site
+cannot drop another's data), downloads and installs WordPress, writes a `wp-config.php`
+with debug logging and `WP_ENVIRONMENT_TYPE=local`, sets pretty permalinks, adds the
+hostname to the certificate, and prints a generated admin password — shown once.
+
+```
+  URL       https://myblog.test
+  Username  you
+  Password  <generated>
+```
+
+Change it in Users → Profile, or `wp user update ... --user_pass=...`.
+
 ## Daily use
 
 ```bash
