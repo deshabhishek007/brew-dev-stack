@@ -140,6 +140,33 @@ cmd_doctor() {
 
   nginx -t 2>&1 | grep -q 'syntax is ok' && ok "nginx config syntax ok" \
     || warn "run 'sudo nginx -t' for a full config check"
+
+  # Mail: the failure mode here is silent real delivery, so check it explicitly.
+  local sp; sp="$(php -r 'echo ini_get("sendmail_path");' 2>/dev/null)"
+  if [[ "$sp" == *mailpit* ]]; then
+    if curl -sf --max-time 3 http://127.0.0.1:8025/readyz >/dev/null 2>&1; then
+      ok "mail captured by Mailpit (php mail() routed, inbox reachable)"
+      lsof -nP -iTCP:8025 -sTCP:LISTEN 2>/dev/null | grep -q '127.0.0.1:8025' \
+        || bad "Mailpit is listening beyond 127.0.0.1 — captured mail is reachable from your network"
+    else
+      bad "php mail() points at Mailpit but Mailpit is not responding — mail is being lost"
+    fi
+  elif [[ -z "$sp" ]]; then
+    warn "php sendmail_path is empty — mail() will fail"
+  else
+    bad "php mail() goes to $sp — a local site could email a real address"
+    echo "       install a catcher with:  devstack install mailpit"
+  fi
+
+  # php-fpm reads php.ini at start; a stale worker keeps the old sendmail_path.
+  if [[ "$sp" == *mailpit* ]] && [[ -f "$BREW/etc/php/$PHP_VERSION/conf.d/zz-mailpit.ini" ]]; then
+    local ini_age fpm_age
+    ini_age=$(stat -f %m "$BREW/etc/php/$PHP_VERSION/conf.d/zz-mailpit.ini" 2>/dev/null || echo 0)
+    fpm_age=$(ps -o lstart= -p "$(pgrep -f "php-fpm: master.*$PHP_VERSION" | head -1)" 2>/dev/null | xargs -I{} date -j -f "%a %b %e %T %Y" {} +%s 2>/dev/null || echo 0)
+    if [[ "$fpm_age" != "0" && "$ini_age" -gt "$fpm_age" ]]; then
+      warn "php-fpm started before the mail config changed — restart it:  brew services restart php@$PHP_VERSION"
+    fi
+  fi
 }
 
 

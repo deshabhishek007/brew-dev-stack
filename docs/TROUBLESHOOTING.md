@@ -112,6 +112,75 @@ grep blowfish $(brew --prefix)/etc/phpmyadmin.config.inc.php
 
 If root has no password, `AllowNoPassword` must also be `true`.
 
+## Mail is not appearing in Mailpit
+
+Check in this order.
+
+**1. Is Mailpit running and bound correctly?**
+
+```bash
+curl -sf http://127.0.0.1:8025/readyz && echo up
+lsof -nP -iTCP:1025 -iTCP:8025 -sTCP:LISTEN
+```
+
+You want `127.0.0.1:1025` and `127.0.0.1:8025`. If you see `*:1025` or `[::]:8025`,
+Homebrew's own service is running instead of this stack's agent — it passes no bind
+flags. Fix with `brew services stop mailpit && bin/devstack install mailpit`.
+
+**2. Is PHP routed to it — in the right PHP?**
+
+```bash
+php -i | grep sendmail_path                       # the CLI
+```
+
+The CLI and php-fpm read the same `php.ini`, but **php-fpm only picks up a change when
+it restarts**. If the CLI shows Mailpit and your site still does not, that is the cause:
+
+```bash
+brew services restart php@8.3
+```
+
+To check what php-fpm actually has, put `<?php echo ini_get('sendmail_path');` in a site
+and load it in a browser. Do not trust the CLI as a proxy for it.
+
+**3. Is the application bypassing `mail()` altogether?**
+
+`sendmail_path` only captures PHP's `mail()`. These bypass it:
+
+- **WP Mail SMTP, FluentSMTP** and similar plugins send over SMTP directly. Point them at
+  `127.0.0.1:1025`, no authentication, no encryption.
+- **Laravel sites created before you installed Mailpit** have no `MAIL_*` in `.env`.
+  New ones are wired automatically; for older ones add:
+
+  ```
+  MAIL_MAILER=smtp
+  MAIL_HOST=127.0.0.1
+  MAIL_PORT=1025
+  ```
+
+- Anything calling an external API (SendGrid, Postmark, SES) is not local mail at all
+  and **will really send**. Check for API keys in `.env` before testing.
+
+**4. Confirm the whole path with one command**
+
+```bash
+php -r 'mail("test@example.test","probe","body","From: probe@local.test");'
+curl -s 'http://127.0.0.1:8025/api/v1/messages?limit=1' | head -c 200
+```
+
+## If you remove Mailpit, mail escapes again
+
+Deleting the ini file or stopping Mailpit returns PHP to the system MTA, which attempts
+real delivery. If you uninstall it, either remove the sites that send mail or set
+`sendmail_path` to something inert:
+
+```bash
+# $(brew --prefix)/etc/php/<version>/conf.d/zz-mailpit.ini
+sendmail_path = "/usr/bin/true"
+```
+
+Silently discarding mail is safer locally than silently sending it.
+
 ## Measuring memory correctly
 
 `ps` RSS misleads on macOS: a long-idle process has much of its memory compressed out
