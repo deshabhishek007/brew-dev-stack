@@ -1,0 +1,55 @@
+name: lint
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check every script
+        run: |
+          for f in install.sh uninstall.sh bin/*; do
+            [ -f "$f" ] || continue
+            bash -n "$f" && echo "ok   $f"
+          done
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          additional_files: 'bin/devstack bin/site-cert-regen'
+          severity: warning
+
+      - name: Templates have no unreplaced placeholders after rendering
+        run: |
+          fail=0
+          for t in config/*.template; do
+            out=$(sed -e 's|{{BREW}}|/opt/homebrew|g' -e 's|{{SITES}}|/home/u/sites|g' \
+                      -e 's|{{TLD}}|test|g'  -e 's|{{USER}}|u|g' \
+                      -e 's|{{GROUP}}|staff|g' -e 's|{{PHPSHORT}}|83|g' \
+                      -e 's|{{SECRET}}|x|g' "$t")
+            if printf '%s' "$out" | grep -q '{{'; then
+              echo "unreplaced placeholder in $t:"
+              printf '%s' "$out" | grep -n '{{' | sed 's/^/    /'
+              fail=1
+            else
+              echo "ok   $t"
+            fi
+          done
+          exit $fail
+
+      - name: --help must not leak script body
+        run: |
+          out=$(bash install.sh --help)
+          # Signatures that only appear in the script body, never in help text.
+          # (Plain "SITES_DIR=" is not one — the help shows it as an example.)
+          if printf '%s' "$out" | grep -qE '^(set -euo pipefail|#!/usr/bin/env|[A-Z_]+="\$\{[A-Z_]+:-)'; then
+            echo "--help printed script code:"; printf '%s\n' "$out"; exit 1
+          fi
+          printf '%s' "$out" | grep -q 'Usage:' || { echo "--help missing Usage"; exit 1; }
+          echo "ok   --help"

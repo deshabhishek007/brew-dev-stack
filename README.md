@@ -34,7 +34,7 @@ Nothing is hidden. `brew upgrade` maintains all of it.
 ## Install
 
 ```bash
-git clone https://github.com/YOURNAME/brew-dev-stack.git
+git clone https://github.com/deshabhishek007/brew-dev-stack.git
 cd brew-dev-stack
 ./install.sh
 ```
