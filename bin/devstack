@@ -51,9 +51,21 @@ EOF
 
 cmd_status() {
   echo "Services"
-  for s in "php@$PHP_VERSION" mysql postgresql@16; do
-    if brew services list 2>/dev/null | grep -qE "^${s//./\\.} +started"; then ok "$s"; else warn "$s not started"; fi
+  # Only report on formulae that are actually installed — hardcoding a list
+  # means reporting "not started" for something the user removed.
+  local svc installed=()
+  brew list --versions "php@$PHP_VERSION" >/dev/null 2>&1 && installed+=("php@$PHP_VERSION")
+  for svc in mysql mariadb redis; do
+    brew list --versions "$svc" >/dev/null 2>&1 && installed+=("$svc")
   done
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] && installed+=("$svc")
+  done < <(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$')
+
+  for svc in "${installed[@]}"; do
+    if brew services list 2>/dev/null | grep -qE "^${svc//./\\.} +started"; then ok "$svc"; else warn "$svc not started"; fi
+  done
+  (( ${#installed[@]} )) || warn "no database or php services installed"
   # nginx rewrites its argv to "nginx: master process …", so `pgrep -x nginx`
   # finds nothing even while it is serving. Match the master line instead.
   pgrep -f 'nginx: master' >/dev/null && ok "nginx running" || bad "nginx not running"
