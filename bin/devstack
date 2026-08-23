@@ -562,23 +562,6 @@ define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
 define( 'WP_ENVIRONMENT_TYPE', 'local' );
 
-/*
- * Follow whatever host the request arrived on.
- *
- * WordPress stores siteurl and home in the database. Reached through a tunnel,
- * it would otherwise emit asset URLs pointing at the .test hostname, which the
- * visitor cannot resolve — the page loads but every stylesheet and script 404s.
- * Deriving both from the request host makes the local name and any tunnel work
- * without touching the database.
- */
-if ( ! empty( $_SERVER['HTTP_HOST'] ) ) {
-    if ( ( $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '' ) === 'https' ) {
-        $_SERVER['HTTPS'] = 'on';   // TLS was terminated upstream
-    }
-    $devstack_scheme = ( ! empty( $_SERVER['HTTPS'] ) && $_SERVER['HTTPS'] !== 'off' ) ? 'https' : 'http';
-    define( 'WP_HOME',    $devstack_scheme . '://' . $_SERVER['HTTP_HOST'] );
-    define( 'WP_SITEURL', $devstack_scheme . '://' . $_SERVER['HTTP_HOST'] );
-}
 PHPEOF
 
     info_step "installing WordPress"
@@ -1082,35 +1065,10 @@ cmd_tunnel() {
   pinned="$(sed -nE "s|^[[:space:]]*${site}[[:space:]]+.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p" "$PHPMAP" 2>/dev/null | head -1)"
   [[ -n "$pinned" ]] && sock="$(php_sock "$pinned")"
 
-  # A WordPress site created before host-following URLs existed still has
-  # siteurl/home pinned in the database. Say so now rather than letting the
-  # user meet an unstyled page and wonder what the tunnel broke.
-  local wpconf="$SITES_DIR/$site/wp-config.php"
-  if [[ -f "$wpconf" ]] && ! grep -q "WP_SITEURL" "$wpconf" 2>/dev/null; then
-    warn "$site pins its URL in the database — CSS and JS will 404 over the tunnel."
-    echo "       Add this to $wpconf, above the 'stop editing' line:"
-    cat <<'SNIP'
-
-         if ( ! empty( $_SERVER['HTTP_HOST'] ) ) {
-             if ( ( $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '' ) === 'https' ) { $_SERVER['HTTPS'] = 'on'; }
-             $s = ( ! empty( $_SERVER['HTTPS'] ) && $_SERVER['HTTPS'] !== 'off' ) ? 'https' : 'http';
-             define( 'WP_HOME',    $s . '://' . $_SERVER['HTTP_HOST'] );
-             define( 'WP_SITEURL', $s . '://' . $_SERVER['HTTP_HOST'] );
-         }
-
-SNIP
-    printf '       Continue anyway? [y/N] '
-    local answer; read -r answer
-    [[ "$answer" =~ ^[Yy]$ ]] || { echo "  Aborted."; exit 0; }
-  fi
-
-  # Laravel reads APP_URL for generated links; warn if it is pinned to .test.
-  if [[ -f "$SITES_DIR/$site/.env" ]] && grep -q "^APP_URL=.*\.$TLD" "$SITES_DIR/$site/.env" 2>/dev/null; then
-    warn "APP_URL in .env points at .$TLD — absolute links will use it."
-    echo "       Laravel builds most URLs from the request, so this usually only"
-    echo "       affects mail and queued jobs. Set APP_URL to the tunnel address"
-    echo "       if you are testing those."
-  fi
+  # No per-site preparation is needed: the vhost rewrites the local hostname
+  # out of every response, so URLs stored in the database — including ones
+  # inside post content — resolve to the tunnel address. Nothing in the site
+  # or its database is touched.
 
   printf 'set $t_root "%s";\nset $t_sock "%s";\n' "$docroot" "$sock" > "$target"
 
@@ -1137,20 +1095,47 @@ SNIP
 EOF
   sudo nginx -s reload || { bad "reload failed"; exit 1; }
 
-  # Point the vhost back at nothing when the tunnel ends, so a stale target is
-  # not left serving a site to any future tunnel.
-  cleanup_tunnel() {
-    printf 'set $t_root "/var/empty";\nset $t_sock "/dev/null";\n' > "$target"
-    printf 'sub_filter "http://placeholder.invalid" "https://$host";\n' > "$BREW/etc/nginx/tunnel-subs.conf"
-    sudo nginx -s reload 2>/dev/null || true
-    echo; echo "  Tunnel closed, vhost reset."
-  }
-  trap cleanup_tunnel EXIT INT TERM
-
   # No --http-host-header: the app must see the real public hostname, otherwise
   # WordPress and Laravel emit asset URLs for the .test name and the page loads
   # unstyled. The vhost matches *.trycloudflare.com instead.
-  cloudflared tunnel --url "http://127.0.0.1:80" --no-autoupdate
+  #
+  # cloudflared prints ~30 lines of connectivity pre-checks at INF level, which
+  # buries the one thing you need. Run it quietly, surface the URL ourselves,
+  # and let anything at warn or above through.
+  local cflog; cflog="$(mktemp -t devstack-tunnel)"
+  cloudflared tunnel --url "http://127.0.0.1:80" --no-autoupdate --loglevel info > "$cflog" 2>&1 &
+  local cfpid=$!
+
+  cleanup_tunnel() {
+    kill "$cfpid" 2>/dev/null || true
+    printf 'set $t_root "/var/empty";\nset $t_sock "/dev/null";\n' > "$target"
+    printf 'sub_filter "http://placeholder.invalid" "https://$host";\n' > "$BREW/etc/nginx/tunnel-subs.conf"
+    sudo nginx -s reload 2>/dev/null || true
+    rm -f "$cflog"
+    echo; echo "  Tunnel closed."
+  }
+  trap cleanup_tunnel EXIT INT TERM
+
+  local url="" i
+  for i in $(seq 1 45); do
+    url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$cflog" 2>/dev/null | head -1)"
+    [[ -n "$url" ]] && break
+    kill -0 "$cfpid" 2>/dev/null || break
+    sleep 1
+  done
+
+  if [[ -z "$url" ]]; then
+    bad "cloudflared did not return a URL"
+    tail -5 "$cflog" | sed 's/^/    /'
+    return 1
+  fi
+
+  printf '\n  \033[1m%s\033[0m\n\n' "$url"
+  printf '  serving %s · ctrl-c to close\n\n' "$site"
+
+  # From here, only show problems.
+  tail -f -n0 "$cflog" 2>/dev/null | grep --line-buffered -E 'ERR|WRN|error|failed' | sed 's/^/  /' &
+  wait "$cfpid" 2>/dev/null || true
 }
 
 

@@ -239,6 +239,9 @@ Opens a Cloudflare quick tunnel — a random `trycloudflare.com` URL, no account
 gone when you press ctrl-c. This is how you test Stripe, Twilio or GitHub callbacks
 against a local site.
 
+It prints the address and nothing else — cloudflared's own output is ~30 lines of
+connectivity pre-checks that bury it. Anything at warning level or above still shows.
+
 **This makes the site reachable by anyone with the URL.** Local sites often run with no
 credentials — do not tunnel one holding anything you would not publish.
 
