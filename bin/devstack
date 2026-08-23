@@ -22,7 +22,10 @@ elif [[ -x /opt/homebrew/bin/brew ]]; then BREW="$(/opt/homebrew/bin/brew --pref
 elif [[ -x /usr/local/bin/brew ]]; then BREW="$(/usr/local/bin/brew --prefix)"
 else echo "Homebrew not found (looked on PATH, /opt/homebrew, /usr/local)" >&2; exit 1
 fi
-export PATH="$BREW/bin:$BREW/sbin:$PATH"
+# System directories are listed explicitly: when PATH is unset (php-fpm),
+# "$PATH" expands to nothing and tools like lsof in /usr/sbin vanish —
+# checks that shell out then report the opposite of the truth.
+export PATH="$BREW/bin:$BREW/sbin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"
 PHPSHORT="${PHP_VERSION//./}"
 
 # `producer | grep -q` is unsafe under `set -o pipefail`: grep -q exits at the
@@ -716,19 +719,21 @@ cmd_list() {
     else
       url=""
     fi
-    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+    # Recency is what makes a site list useful; alphabetical is not.
+    local mtime; mtime="$(stat -f %m "${d%/}" 2>/dev/null || echo 0)"
+    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
       "$name" "$SEP" "$kind" "$SEP" "$docroot" "$SEP" "$repo" "$SEP" \
-      "$url" "$SEP" "${d%/}" "$SEP" "$link" >> "$rows"
+      "$url" "$SEP" "${d%/}" "$SEP" "$link" "$SEP" "$mtime" >> "$rows"
   done
 
   if (( JSON )); then
-    json_rows_to_array 'name,type,docroot,repo,url,path,symlink' < "$rows"
+    json_rows_to_array 'name,type,docroot,repo,url,path,symlink,modified' < "$rows"
     rm -f "$rows"; return 0
   fi
 
   printf '  %-24s %-15s %-8s %-28s %s\n' "SITE" "TYPE" "DOCROOT" "REPO" "URL"
   printf '  %-24s %-15s %-8s %-28s %s\n' "----" "----" "-------" "----" "---"
-  while IFS="$SEP" read -r name kind docroot repo url path link; do
+  while IFS="$SEP" read -r name kind docroot repo url path link mtime; do
     local mark=""; [[ "$link" == "true" ]] && mark=" →link"
     local shown="$url"; [[ -z "$url" ]] && shown="(name not a valid hostname — not served)"
     local dr="root"; [[ "$docroot" == "public" ]] && dr="public/"

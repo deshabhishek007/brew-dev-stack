@@ -268,6 +268,18 @@ emits `http://` assets onto an `https` page and browsers block them.
 Once installed, open **`https://devstack.test`** — every site with its type and
 repository, the health checks, and links to Mailpit, Adminer and phpMyAdmin.
 
+It greets you by the name from your config, then gives you, on one page: what is
+running, links to the tools, your sites newest-first, **the full command reference**,
+and **how the stack is put together** — the layers, where each config lives, and the
+non-obvious decisions behind them.
+
+The command reference is parsed from `devstack help` at render time, so it cannot drift
+out of step with the CLI.
+
+Only real sites are listed. A directory under `~/sites` with nothing servable in it is
+a folder, not a site, and listing all of them buries the handful you work on. Health
+checks appear **only when something is wrong**.
+
 It is **read-only by design**. Any page your browser loads can issue requests to
 127.0.0.1, so a local control panel able to create or delete sites would be reachable
 by a malicious page through CSRF or DNS rebinding. Binding to localhost stops your
