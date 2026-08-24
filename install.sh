@@ -179,6 +179,11 @@ log_errors = On
 display_errors = On
 display_startup_errors = On
 error_reporting = E_ALL
+
+; Stock memory_limit is 128M, which is not enough for `wp core download` to
+; unpack WordPress — site creation dies with an OOM fatal on a fresh machine.
+; 512M is a comfortable ceiling for local development tooling.
+memory_limit = 512M
 EOF
   touch "$BREW/var/log/php-error.log"
   ok "php-fpm ($PHP_VERSION) on unix socket, errors to $BREW/var/log/php-error.log"
