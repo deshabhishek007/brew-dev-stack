@@ -520,7 +520,7 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
   </section>
 
   <div class="foot">
-    Made with <span title="Homebrew">🍺</span> on macOS ·
+    Made with <span title="freshly brewed">☕</span> on macOS ·
     <a href="https://github.com/deshabhishek007/brew-dev-stack">GitHub</a> ·
     feature ideas &amp; feedback → <a href="https://x.com/fitehal">@fitehal</a>
   </div>
