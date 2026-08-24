@@ -226,6 +226,19 @@ function site_errors(string $brew): array
     return $out;
 }
 
+/** The last lines of a log, newest first. Reads only the tail of the file. */
+function log_tail(string $file, int $lines = 120): array
+{
+    if (!is_file($file) || !is_readable($file)) return [];
+    $fh = fopen($file, 'r');
+    if (!$fh) return [];
+    fseek($fh, max(0, filesize($file) - 131072));
+    $tail = (string) stream_get_contents($fh);
+    fclose($fh);
+    $rows = array_values(array_filter(explode("\n", $tail), fn($l) => trim($l) !== ''));
+    return array_reverse(array_slice($rows, -$lines));
+}
+
 function ago(int $ts): string
 {
     $d = time() - $ts;
@@ -257,6 +270,14 @@ $problems = array_values(array_filter($checks, fn($c) => $c['status'] !== 'pass'
 $health   = site_health($sites);
 $phpvers  = php_versions($BREW);
 $services = services($BREW);
+$logs = [
+    'php'    => ['PHP errors',   "$BREW/var/log/php-error.log"],
+    'nginx'  => ['nginx errors', "$BREW/var/log/nginx/$tld-error.log"],
+    'access' => ['nginx access', "$BREW/var/log/nginx/$tld-access.log"],
+    'fpm'    => ['php-fpm',      "$BREW/var/log/php-fpm-" . ($phpvers['default'] ?? '8.3') . ".log"],
+];
+$logKey  = isset($_GET['log']) && isset($logs[$_GET['log']]) ? $_GET['log'] : 'php';
+$logRows = log_tail($logs[$logKey][1]);
 $siteErrs = site_errors($BREW);
 $mail     = mail_count();
 $wk       = workers();
@@ -380,6 +401,18 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 .st.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
 .st.bad,.st.down{color:var(--fail);border-color:color-mix(in srgb,var(--fail) 40%,var(--line))}
 .st.prot{color:var(--dim)}
+.lognav{display:flex;gap:7px;margin-bottom:10px;flex-wrap:wrap}
+.logbtn{font-size:12.5px;padding:5px 12px;border:1px solid var(--line);border-radius:20px;
+  color:var(--dim);text-decoration:none;background:var(--panel)}
+.logbtn:hover{border-color:var(--accent);color:var(--fg)}
+.logbtn.on{color:var(--accent);border-color:var(--accent);font-weight:500}
+.logview{margin-top:9px;max-height:520px;overflow:auto;padding:8px 0}
+.logline{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.55;
+  padding:1px 15px;color:var(--dim);white-space:pre-wrap;word-break:break-all}
+.logline:hover{background:var(--hover);color:var(--fg)}
+.logline.dim{color:var(--faint);padding:10px 15px}
+.loghint{color:var(--faint);font-size:12px;margin:8px 2px}
+.loghint code{font-family:ui-monospace,Menlo,monospace;background:var(--code);padding:1px 5px;border-radius:4px}
 .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px}
 .foot a{color:var(--dim);text-decoration:none}
 .foot a:hover{color:var(--accent)}
@@ -408,6 +441,7 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
     <button class="tab" role="tab" data-p="overview" aria-selected="true">Overview</button>
     <button class="tab" role="tab" data-p="sites" aria-selected="false">Sites<span class="n"><?= count($sites) ?></span></button>
     <button class="tab" role="tab" data-p="commands" aria-selected="false">CLI commands</button>
+    <button class="tab" role="tab" data-p="logs" aria-selected="false">Logs</button>
     <button class="tab" role="tab" data-p="reference" aria-selected="false">Reference</button>
   </div>
 
@@ -502,6 +536,24 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
     </div>
   </section>
 
+  <section class="pane" id="logs">
+    <div class="lognav">
+      <?php foreach ($logs as $k => [$label, $file]): ?>
+        <a class="logbtn <?= $k === $logKey ? 'on' : '' ?>" href="?log=<?= e($k) ?>#logs"><?= e($label) ?></a>
+      <?php endforeach; ?>
+    </div>
+    <input type="search" id="lq" placeholder="Filter lines — try a site name…" autocomplete="off">
+    <div class="card logview" id="logview">
+      <?php if (!$logRows): ?>
+        <div class="logline dim">— log is empty —</div>
+      <?php else: foreach ($logRows as $l): ?>
+        <div class="logline"><?= e($l) ?></div>
+      <?php endforeach; endif; ?>
+    </div>
+    <p class="loghint">Newest first, last <?= count($logRows) ?> lines · read-only ·
+      follow live with <code>devstack logs <?= e($logKey) ?></code></p>
+  </section>
+
   <section class="pane" id="reference">
     <h3 class="sub">Architecture</h3>
     <div class="card" style="margin-top:0">
@@ -531,10 +583,16 @@ const tabs = [...document.querySelectorAll('.tab')];
 function show(id) {
   tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.p === id)));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === id));
-  history.replaceState(null, '', '#' + id);
+  history.replaceState(null, '', location.search + '#' + id);
 }
 tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.p)));
 if (location.hash) show(location.hash.slice(1));
+
+const lq = document.getElementById('lq'), lls = [...document.querySelectorAll('#logview .logline')];
+lq?.addEventListener('input', () => {
+  const t = lq.value.trim().toLowerCase();
+  lls.forEach(l => l.classList.toggle('hidden', t && !l.textContent.toLowerCase().includes(t)));
+});
 
 const q = document.getElementById('q'), rows = [...document.querySelectorAll('#list .row')];
 q.addEventListener('input', () => {

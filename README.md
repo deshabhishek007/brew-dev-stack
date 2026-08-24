@@ -276,6 +276,7 @@ Four tabs, each a single screen:
 |---|---|
 | **Overview** | anything down, a live tunnel with its public URL, the tools, and every service with its port and running state |
 | **Sites** | all of them, searchable — each with its HTTP status code as a visible badge, a per-site count of recent PHP errors, its PHP version when pinned, and any running workers |
+| **Logs** | the last 120 lines of the PHP, nginx error, nginx access or php-fpm log, newest first, with a filter box — reading logs is read-only by nature, so it belongs here |
 | **CLI commands** | why the page is read-only, the current default values (sites dir, TLD, PHP version), and the full reference parsed from `devstack help` so it cannot drift from the CLI |
 | **Reference** | each layer, its package and config path, and the reasoning behind the non-obvious decisions |
 
