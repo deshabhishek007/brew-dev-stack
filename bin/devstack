@@ -1111,7 +1111,7 @@ EOF
     printf 'set $t_root "/var/empty";\nset $t_sock "/dev/null";\n' > "$target"
     printf 'sub_filter "http://placeholder.invalid" "https://$host";\n' > "$BREW/etc/nginx/tunnel-subs.conf"
     sudo nginx -s reload 2>/dev/null || true
-    rm -f "$cflog"
+    rm -f "$cflog" "$BREW/var/run/devstack-tunnel"
     echo; echo "  Tunnel closed."
   }
   trap cleanup_tunnel EXIT INT TERM
@@ -1132,6 +1132,11 @@ EOF
     tail -5 "$cflog" | sed 's/^/    /'
     return 1
   fi
+
+  # Publish the live tunnel so the dashboard can show it. Deleted on exit; the
+  # dashboard also confirms cloudflared is running, so a state file left behind
+  # by a hard kill cannot claim a tunnel that is gone.
+  printf '%s\n%s\n%s\n' "$site" "$url" "$cfpid" > "$BREW/var/run/devstack-tunnel"
 
   printf '\n  \033[1m%s\033[0m\n\n' "$url"
   printf '  serving %s · ctrl-c to close\n\n' "$site"

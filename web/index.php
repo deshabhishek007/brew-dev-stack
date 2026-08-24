@@ -78,15 +78,18 @@ $problems = array_values(array_filter($checks, fn($c) => $c['status'] !== 'pass'
 // A forgotten tunnel leaves the machine reachable from the internet, so this
 // is worth stating loudly rather than leaving it to be noticed.
 $tunnel = null;
-// The bracket keeps pgrep from matching the shell running this very command,
-// whose argv contains the pattern.
 $cf = trim(shell_exec("pgrep -f '[c]loudflared tunnel' 2>/dev/null") ?: '');
 if ($cf !== '') {
-    $target = @file_get_contents("$BREW/etc/nginx/tunnel-target.conf") ?: '';
-    if (preg_match('~set \$t_root "([^"]+)"~', $target, $m) && !str_contains($m[1], '/var/empty')) {
-        $tunnel = basename(rtrim(str_replace('/public', '', $m[1]), '/'));
-    } else {
-        $tunnel = '(target not set)';
+    // The state file carries the public URL; cloudflared running is what makes
+    // it true. Requiring both means neither a stale file nor an unrelated
+    // cloudflared process can produce a wrong answer.
+    $state = @file("$BREW/var/run/devstack-tunnel", FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+    $tunnel = ['site' => $state[0] ?? null, 'url' => $state[1] ?? null];
+    if ($tunnel['site'] === null) {
+        $target = @file_get_contents("$BREW/etc/nginx/tunnel-target.conf") ?: '';
+        if (preg_match('~set \$t_root "([^"]+)"~', $target, $m) && !str_contains($m[1], '/var/empty')) {
+            $tunnel['site'] = basename(rtrim(str_replace('/public', '', $m[1]), '/'));
+        }
     }
 }
 
@@ -167,7 +170,10 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 .tunnel{margin:18px 0 0;padding:12px 15px;border-radius:9px;font-size:13.5px;
   border:1px solid color-mix(in srgb,var(--warn) 50%,var(--line));background:var(--panel)}
 .tunnel b{display:block;color:var(--warn);font-weight:600;margin-bottom:2px}
-.tunnel span{color:var(--dim)}
+.tunnel span{color:var(--dim);display:block}
+.tunnel .turl{display:block;font-family:ui-monospace,Menlo,monospace;font-size:13px;
+  color:var(--accent);text-decoration:none;margin:4px 0 6px;word-break:break-all}
+.tunnel .turl:hover{text-decoration:underline}
 .hidden{display:none}
 @media(max-width:620px){table.arch td:last-child{display:none}}
 </style>
@@ -189,7 +195,14 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
   <?php if ($tunnel !== null): ?>
     <div class="tunnel">
       <b>A public tunnel is open</b>
-      <span><?= e($tunnel) ?> is reachable from the internet right now. Close it with ctrl-c in the terminal running <code>devstack tunnel</code>.</span>
+      <?php if ($tunnel['url']): ?>
+        <a href="<?= e($tunnel['url']) ?>" class="turl"><?= e($tunnel['url']) ?></a>
+        <span>serving <?= e($tunnel['site'] ?? '?') ?> — reachable by anyone with this address.
+              Close it with ctrl-c in the terminal running <code>devstack tunnel</code>.</span>
+      <?php else: ?>
+        <span><?= e($tunnel['site'] ?? 'A site') ?> is reachable from the internet right now.
+              Close it with ctrl-c in the terminal running <code>devstack tunnel</code>.</span>
+      <?php endif; ?>
     </div>
   <?php endif; ?>
 

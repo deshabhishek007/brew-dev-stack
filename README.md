@@ -271,6 +271,10 @@ emits `http://` assets onto an `https` page and browsers block them.
 Once installed, open **`https://devstack.test`** — every site with its type and
 repository, the health checks, and links to Mailpit, Adminer and phpMyAdmin.
 
+If a tunnel is open it says so at the top, with the public address — a forgotten
+tunnel leaves a site reachable from the internet, and that is worth stating without
+being asked.
+
 It greets you by the name from your config, then gives you, on one page: what is
 running, links to the tools, your sites newest-first, **the full command reference**,
 and **how the stack is put together** — the layers, where each config lives, and the
