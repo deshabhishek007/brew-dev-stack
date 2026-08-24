@@ -267,8 +267,7 @@ php_prepare() {
   # Always restart: `start` on an already-running service succeeds without
   # reloading, so the pool changes above would never take effect.
   brew services restart "php@$ver" >/dev/null 2>&1
-  local i
-  for i in $(seq 1 20); do [[ -S "$(php_sock "$ver")" ]] && break; sleep 1; done
+  for _ in $(seq 1 20); do [[ -S "$(php_sock "$ver")" ]] && break; sleep 1; done
   [[ -S "$(php_sock "$ver")" ]] || { bad "php@$ver socket never appeared — see $BREW/var/log/php-fpm-${ver}.log"; return 1; }
   return 0
 }
@@ -424,8 +423,7 @@ cmd_mysql_perf() {
   echo "Restarting MySQL…"
   brew services restart mysql >/dev/null
   # MySQL reports "started" before the socket is ready; poll rather than sleep.
-  local i
-  for i in $(seq 1 30); do mysql -N -e "SELECT 1" >/dev/null 2>&1 && break; sleep 1; done
+  for _ in $(seq 1 30); do mysql -N -e "SELECT 1" >/dev/null 2>&1 && break; sleep 1; done
   if mysql -N -e "SELECT 1" >/dev/null 2>&1; then
     ok "MySQL up (performance_schema = $(mysql -N -e "SHOW VARIABLES LIKE 'performance_schema'" 2>/dev/null | awk '{print $2}'))"
     local pid; pid="$(pgrep -x mysqld | head -1)"
@@ -441,6 +439,7 @@ cmd_mysql_perf() {
 # --- one-time onboarding ---------------------------------------------------
 CONFIG_DIR="$(dirname "$CONFIG_FILE")"
 
+# shellcheck source=/dev/null
 load_config() { [[ -f "$CONFIG_FILE" ]] && . "$CONFIG_FILE"; return 0; }
 
 cmd_config() {
@@ -727,6 +726,7 @@ cmd_list() {
 
   printf '  %-24s %-15s %-8s %-28s %s\n' "SITE" "TYPE" "DOCROOT" "REPO" "URL"
   printf '  %-24s %-15s %-8s %-28s %s\n' "----" "----" "-------" "----" "---"
+  # shellcheck disable=SC2034  # path is part of the row format; unused here
   while IFS="$SEP" read -r name kind docroot repo url path link mtime; do
     local mark=""; [[ "$link" == "true" ]] && mark=" →link"
     local shown="$url"; [[ -z "$url" ]] && shown="(name not a valid hostname — not served)"
@@ -877,14 +877,13 @@ cmd_install_mailpit() {
 EOF
   # bootout is not synchronous: bootstrapping immediately after can fail with
   # "Bootstrap failed: 5". Wait for it to unload, then retry the bootstrap.
-  local i
   launchctl bootout gui/"$(id -u)"/dev.brewdevstack.mailpit 2>/dev/null || true
-  for i in $(seq 1 10); do
+  for _ in $(seq 1 10); do
     grep -q dev.brewdevstack.mailpit <<<"$(out_of launchctl list)" || break
     sleep 1
   done
   launchctl enable gui/"$(id -u)"/dev.brewdevstack.mailpit 2>/dev/null || true
-  for i in 1 2 3; do
+  for _ in 1 2 3; do
     launchctl bootstrap gui/"$(id -u)" "$plist" 2>/dev/null && break
     sleep 2
   done
@@ -893,7 +892,7 @@ EOF
   # would otherwise mask a failed bootstrap.
   grep -q dev.brewdevstack.mailpit <<<"$(out_of launchctl list)" \
     || { bad "mailpit agent failed to load"; return 1; }
-  for i in $(seq 1 20); do curl -sf --max-time 2 http://127.0.0.1:8025/readyz >/dev/null 2>&1 && break; sleep 1; done
+  for _ in $(seq 1 20); do curl -sf --max-time 2 http://127.0.0.1:8025/readyz >/dev/null 2>&1 && break; sleep 1; done
   if curl -sf --max-time 3 http://127.0.0.1:8025/readyz >/dev/null 2>&1; then
     ok "running on 127.0.0.1:1025 (smtp) and :8025 (ui)"
   else
@@ -975,8 +974,7 @@ EOF
   mkdir -p "$BREW/var/log/xdebug"
   brew services restart "php@$PHP_VERSION" >/dev/null 2>&1
 
-  local i
-  for i in $(seq 1 15); do grep -qi '^xdebug$' <<<"$(out_of php -m)" && break; sleep 1; done
+  for _ in $(seq 1 15); do grep -qi '^xdebug$' <<<"$(out_of php -m)" && break; sleep 1; done
   if grep -qi '^xdebug$' <<<"$(out_of php -m)"; then
     ok "xdebug $(php -r 'echo phpversion("xdebug");' 2>/dev/null) loaded (mode: $(php -r 'echo ini_get("xdebug.mode");' 2>/dev/null))"
   else
@@ -1012,8 +1010,7 @@ cmd_install_redis() {
   fi
 
   brew services restart redis >/dev/null 2>&1
-  local i
-  for i in $(seq 1 20); do redis-cli ping >/dev/null 2>&1 && break; sleep 1; done
+  for _ in $(seq 1 20); do redis-cli ping >/dev/null 2>&1 && break; sleep 1; done
   if [[ "$(redis-cli ping 2>/dev/null)" == "PONG" ]]; then
     ok "redis responding on 127.0.0.1:6379"
   else
@@ -1040,7 +1037,7 @@ cmd_install_redis() {
     /usr/bin/sed -i '' -E '/^[[:space:]]*extension[[:space:]]*=[[:space:]]*"?redis/d' "$phpini"
   printf 'extension = "%s/redis.so"\n' "$extdir" > "$BREW/etc/php/$PHP_VERSION/conf.d/zz-redis.ini"
   brew services restart "php@$PHP_VERSION" >/dev/null 2>&1
-  for i in $(seq 1 15); do grep -qi '^redis$' <<<"$(out_of php -m)" && break; sleep 1; done
+  for _ in $(seq 1 15); do grep -qi '^redis$' <<<"$(out_of php -m)" && break; sleep 1; done
   grep -qi '^redis$' <<<"$(out_of php -m)" \
     && ok "php redis extension loaded" || warn "php redis extension did not load"
 
@@ -1130,8 +1127,8 @@ EOF
   }
   trap cleanup_tunnel EXIT INT TERM
 
-  local url="" i
-  for i in $(seq 1 45); do
+  local url=""
+  for _ in $(seq 1 45); do
     # `|| true` is required: not finding the URL yet is the normal case on the
     # first iterations, and a failing command substitution aborts under set -e.
     # -m1 instead of `| head -1` also avoids the SIGPIPE/pipefail race.
@@ -1239,10 +1236,9 @@ worker_toggle() {  # <kind> <site> <on|off>
         worker_plist schedule "$site" schedule:run >/dev/null
       fi
       launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-      local i
-      for i in $(seq 1 10); do grep -q "$label" <<<"$(out_of launchctl list)" || break; sleep 1; done
+      for _ in $(seq 1 10); do grep -q "$label" <<<"$(out_of launchctl list)" || break; sleep 1; done
       launchctl enable "gui/$(id -u)/$label" 2>/dev/null || true
-      for i in 1 2 3; do launchctl bootstrap "gui/$(id -u)" "$file" 2>/dev/null && break; sleep 2; done
+      for _ in 1 2 3; do launchctl bootstrap "gui/$(id -u)" "$file" 2>/dev/null && break; sleep 2; done
       sleep 2
       grep -q "$label" <<<"$(out_of launchctl list)" \
         && ok "$kind worker started for $site" \

@@ -11,12 +11,17 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 40
     env:
-      SITES_DIR: ${{ runner.temp }}/sites
       TLD: devtest
       PHP_VERSION: '8.3'
 
     steps:
       - uses: actions/checkout@v4
+
+      # The runner context is not available in workflow- or job-level env —
+      # referencing it there makes the whole workflow file invalid, and GitHub
+      # reports only "workflow file issue". Export at runtime instead.
+      - name: Set SITES_DIR
+        run: echo "SITES_DIR=$RUNNER_TEMP/sites" >> "$GITHUB_ENV"
 
       - name: Show the starting state
         run: |
