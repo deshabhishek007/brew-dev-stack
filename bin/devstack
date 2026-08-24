@@ -1442,7 +1442,7 @@ cmd_install_postgres() {
     # 18 rather than an older major: pgvector's bottle only builds against
     # recent majors, and installing an old postgres walks straight into that.
     formula="postgresql@18"
-    echo "Installing $formula…"
+    echo "Installing ${formula}…"
     brew install "$formula" >/dev/null
   fi
   ok "$formula $(brew list --versions "$formula" | awk '{print $2}')"

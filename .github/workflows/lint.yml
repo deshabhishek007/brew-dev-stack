@@ -43,6 +43,17 @@ jobs:
           done
           exit $fail
 
+      - name: No variable may touch a multibyte character unbraced
+        run: |
+          # `echo "$var…"` is parsed by macOS's stock bash 3.2 as the variable
+          # "var<bytes>", which is unbound — the script dies on a fresh Mac and
+          # nowhere else. This class has been reintroduced twice; now it is a gate.
+          if grep -rnP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' install.sh uninstall.sh bin/devstack bin/site-cert-regen; then
+            echo "FAIL: brace these as \${var} — stock bash 3.2 eats the multibyte char into the name"
+            exit 1
+          fi
+          echo "ok: no unbraced variables against multibyte characters"
+
       - name: --help must not leak script body
         run: |
           out=$(bash install.sh --help)
