@@ -1062,7 +1062,7 @@ cmd_tunnel() {
   [[ -d "$docroot/public" ]] && docroot="$docroot/public"
   local sock; sock="$(php_sock "$PHP_VERSION")"
   local pinned
-  pinned="$(sed -nE "s|^[[:space:]]*${site}[[:space:]]+.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p" "$PHPMAP" 2>/dev/null | head -1)"
+  pinned="$(sed -nE "s|^[[:space:]]*${site}[[:space:]]+.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p" "$PHPMAP" 2>/dev/null | head -1 || true)"
   [[ -n "$pinned" ]] && sock="$(php_sock "$pinned")"
 
   # No per-site preparation is needed: the vhost rewrites the local hostname
@@ -1118,7 +1118,10 @@ EOF
 
   local url="" i
   for i in $(seq 1 45); do
-    url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$cflog" 2>/dev/null | head -1)"
+    # `|| true` is required: not finding the URL yet is the normal case on the
+    # first iterations, and a failing command substitution aborts under set -e.
+    # -m1 instead of `| head -1` also avoids the SIGPIPE/pipefail race.
+    url="$(grep -m1 -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$cflog" 2>/dev/null || true)"
     [[ -n "$url" ]] && break
     kill -0 "$cfpid" 2>/dev/null || break
     sleep 1
@@ -1150,7 +1153,7 @@ worker_plist() {  # <kind> <site> <args...>
   local php_bin="$BREW/opt/php@$PHP_VERSION/bin/php"
   # Honour a per-site PHP pin so the worker runs the same version as the web.
   local pinned
-  pinned="$(sed -nE "s|^[[:space:]]*${site}[[:space:]]+.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p" "$PHPMAP" 2>/dev/null | head -1)"
+  pinned="$(sed -nE "s|^[[:space:]]*${site}[[:space:]]+.*/php([0-9])([0-9]+)-fpm\.sock;.*|\1.\2|p" "$PHPMAP" 2>/dev/null | head -1 || true)"
   [[ -n "$pinned" ]] && php_bin="$BREW/opt/php@$pinned/bin/php"
 
   local extra=""
