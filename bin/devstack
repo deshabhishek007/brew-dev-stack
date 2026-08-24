@@ -252,7 +252,7 @@ php_prepare() {
   # before any assignment takes effect, so b sees an unset a.
   local ver="$1"
   local short="${ver//./}"
-  brew list --versions "php@$ver" >/dev/null 2>&1 || { echo "Installing php@$ver…"; brew install "php@$ver" >/dev/null; }
+  brew list --versions "php@$ver" >/dev/null 2>&1 || { echo "Installing php@${ver}…"; brew install "php@$ver" >/dev/null; }
   local pool="$BREW/etc/php/$ver/php-fpm.d/www.conf" conf="$BREW/etc/php/$ver/php-fpm.conf"
   [[ -f "$pool" ]] || { bad "no pool config at $pool"; return 1; }
   /usr/bin/sed -i '' \
@@ -1024,7 +1024,7 @@ cmd_install_redis() {
     ok "phpredis already built for PHP $PHP_VERSION"
   else
     command -v pecl >/dev/null || { warn "pecl not found — skipping the PHP extension"; return 0; }
-    echo "Compiling phpredis for PHP $PHP_VERSION…"
+    echo "Compiling phpredis for PHP ${PHP_VERSION}…"
     # phpredis asks about optional deps; answer with defaults.
     printf 'no\nno\nno\nno\n' | pecl install redis >/dev/null 2>&1 || pecl install --force redis >/dev/null 2>&1
     [[ -f "$extdir/redis.so" ]] || { warn "phpredis build failed — run 'pecl install redis' to see why"; return 0; }

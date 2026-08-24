@@ -118,7 +118,7 @@ for f in "${FORMULAE[@]}"; do
     ok "$f (already installed)"
   else
     if is_dry; then dry "brew install $f"; else
-      info "installing $f…"
+      info "installing ${f}…"
       brew install "$f" >/dev/null && ok "$f"
     fi
   fi
