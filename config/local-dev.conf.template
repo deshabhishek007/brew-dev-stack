@@ -15,6 +15,19 @@ map $sub $php_socket {
     include {{BREW}}/etc/nginx/php-versions.map;
 }
 
+# The dashboard redirects to HTTPS. Typing a bare hostname gets you http, and
+# an entry point that says "Not Secure" is a poor advert for a stack whose
+# point is trusted local TLS. An exact server_name beats the regex vhost below.
+#
+# Sites are deliberately left alone: forcing HTTPS everywhere would break
+# testing of http behaviour, redirect chains and mixed content, which is
+# exactly the sort of thing you use a local stack for.
+server {
+    listen 127.0.0.1:80;
+    server_name devstack.{{TLD}};
+    return 301 https://$host$request_uri;
+}
+
 server {
     listen 127.0.0.1:80;
     listen 127.0.0.1:443 ssl;

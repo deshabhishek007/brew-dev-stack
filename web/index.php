@@ -109,7 +109,7 @@ $layers = [
     ['Web',      'nginx',                  'One vhost serves every site', "$BREW/etc/nginx/servers/local-dev.conf"],
     ['PHP',      'php-fpm',                'Per-version unix sockets',    "$BREW/etc/nginx/php-versions.map"],
     ['TLS',      'mkcert',                 'One cert, one SAN per site',  "$BREW/etc/nginx/certs/local-$tld.pem"],
-    ['Database', 'mysql · postgresql',     'Tuned for a laptop',          "$BREW/etc/my.cnf"],
+    ['Database', 'mysql, postgresql',       'Tuned for a laptop',          "$BREW/etc/my.cnf"],
     ['Mail',     'mailpit',                'sendmail_path is redirected', "$BREW/etc/php/*/conf.d/zz-mailpit.ini"],
     ['Tunnel',   'cloudflared',            'On demand, for webhooks',     "$BREW/etc/nginx/servers/zz-tunnel.conf"],
 ];
@@ -161,12 +161,14 @@ table.arch{width:100%;border-collapse:collapse;font-size:13px}
 table.arch td{padding:9px 15px;border-bottom:1px solid var(--line);vertical-align:top}
 table.arch tr:last-child td{border-bottom:0}
 table.arch td:first-child{font-weight:600;width:78px}
-table.arch td:nth-child(2){color:var(--dim);width:150px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+table.arch td:nth-child(2){color:var(--dim);width:auto;white-space:nowrap;font-family:ui-monospace,Menlo,monospace;font-size:12px}
 table.arch td:nth-child(3){color:var(--dim)}
 table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;text-align:right;white-space:nowrap}
 .note{padding:13px 15px;border-bottom:1px solid var(--line);font-size:13.5px;color:var(--dim)}
 .note:last-child{border-bottom:0}
 .note b{color:var(--fg);font-weight:600;display:block;margin-bottom:2px;font-size:13.5px}
+.note code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--code);
+  padding:1px 5px;border-radius:4px;white-space:nowrap}
 .tunnel{margin:18px 0 0;padding:12px 15px;border-radius:9px;font-size:13.5px;
   border:1px solid color-mix(in srgb,var(--warn) 50%,var(--line));background:var(--panel)}
 .tunnel b{display:block;color:var(--warn);font-weight:600;margin-bottom:2px}
@@ -251,7 +253,7 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
   <h2>Worth knowing</h2>
   <div class="card">
     <div class="note"><b>Every directory under ~/sites is served</b>
-      <code><?= e($tld) ?></code> resolves to 127.0.0.1, and one nginx vhost maps the hostname to the folder.
+      <code>.<?= e($tld) ?></code> resolves to 127.0.0.1, and one nginx vhost maps the hostname to the folder.
       A project with a <code>public/</code> directory serves from it automatically, so Laravel and
       WordPress both work with no per-site config. Add a folder, run <code>devstack reload</code>.</div>
 
