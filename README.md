@@ -184,7 +184,20 @@ phpMyAdmin remains available at `https://phpmyadmin.test` if you prefer it for M
 ### PostgreSQL and pgvector
 
 ```bash
+devstack install postgres        # any time after installing
+devstack install pgvector        # vector search; then CREATE EXTENSION vector;
+```
+
+Or opt in at install time:
+
+```bash
 WITH_POSTGRES=1 WITH_PGVECTOR=1 ./install.sh
+```
+
+Postgres-backed sites need no password — local connections are trusted:
+
+```bash
+devstack new myapp --type=laravel --db=pgsql
 ```
 
 `PG_VERSION` defaults to **18**. This matters: Homebrew's `pgvector` bottle is built

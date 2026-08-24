@@ -81,6 +81,8 @@ Configure
   install mailpit           catch all outgoing mail (nothing reaches real inboxes)
   install xdebug            step debugger and profiler (dormant until triggered)
   install redis             cache, sessions and queues, with the PHP extension
+  install postgres          PostgreSQL, trusted on loopback
+  install pgvector          vector search (needs PostgreSQL 17+)
 
   help, --version
 
@@ -1402,6 +1404,59 @@ cmd_creds() {
   fi
 }
 
+# --- postgres --------------------------------------------------------------
+cmd_install_postgres() {
+  local formula
+  formula="$(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$' | sort -V | tail -1)"
+  if [[ -z "$formula" ]]; then
+    # 18 rather than an older major: pgvector's bottle only builds against
+    # recent majors, and installing an old postgres walks straight into that.
+    formula="postgresql@18"
+    echo "Installing $formula…"
+    brew install "$formula" >/dev/null
+  fi
+  ok "$formula $(brew list --versions "$formula" | awk '{print $2}')"
+
+  brew services start "$formula" >/dev/null 2>&1 || true
+  local _
+  for _ in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break; sleep 1; done
+  if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+    ok "postgres accepting connections on 127.0.0.1:5432"
+  else
+    bad "postgres did not come up — brew services info $formula"; return 1
+  fi
+  echo
+  echo "  Local connections are trusted — no password. Create a pgsql-backed site:"
+  echo "    devstack new myapp --type=laravel --db=pgsql"
+  echo "  Vector search:  devstack install pgvector"
+}
+
+cmd_install_pgvector() {
+  local formula major
+  formula="$(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$' | sort -V | tail -1)"
+  [[ -n "$formula" ]] || { bad "No PostgreSQL installed. First:  devstack install postgres"; return 1; }
+  major="$(psql -h 127.0.0.1 -d postgres -tAc "SHOW server_version" 2>/dev/null | cut -d. -f1)"
+  if [[ -n "$major" && "$major" -lt 17 ]]; then
+    # The failure without this check is nasty: brew install succeeds, and only
+    # CREATE EXTENSION fails later, with nothing pointing at the version gap.
+    bad "pgvector's bottle builds against PostgreSQL 17/18; you are on $major."
+    echo "       Upgrade first (dump, install postgresql@18, restore) — see the README."
+    return 1
+  fi
+
+  brew list --versions pgvector >/dev/null 2>&1 || { echo "Installing pgvector…"; brew install pgvector >/dev/null; }
+  ok "pgvector $(brew list --versions pgvector | awk '{print $2}')"
+
+  # Never report success on file placement alone — prove the extension loads.
+  if psql -h 127.0.0.1 -d postgres -tAc \
+       "SELECT 1 FROM pg_available_extensions WHERE name='vector'" 2>/dev/null | grep -q 1; then
+    ok "extension visible — enable per database with: CREATE EXTENSION vector;"
+  else
+    bad "postgres does not see the extension — is the server running the same major pgvector was built for?"
+    return 1
+  fi
+}
+
 VERSION="0.1.0"
 
 cmd_mysql() {
@@ -1418,8 +1473,10 @@ cmd_install() {
     mailpit) cmd_install_mailpit ;;
     xdebug)  cmd_install_xdebug ;;
     redis)   cmd_install_redis ;;
-    "")      bad "Usage: devstack install <adminer|mailpit|xdebug|redis>"; exit 1 ;;
-    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit, xdebug, redis"; exit 1 ;;
+    postgres) cmd_install_postgres ;;
+    pgvector) cmd_install_pgvector ;;
+    "")      bad "Usage: devstack install <adminer|mailpit|xdebug|redis|postgres|pgvector>"; exit 1 ;;
+    *)       bad "Nothing to install called '$1'. Available: adminer, mailpit, xdebug, redis, postgres, pgvector"; exit 1 ;;
   esac
 }
 
