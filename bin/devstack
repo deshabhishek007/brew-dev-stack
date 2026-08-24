@@ -494,6 +494,17 @@ site_db_name() { local n="${1//-/_}"; printf 'dev_%s' "${n:0:60}"; }
 # Databases were prefixed wp_ before multiple project types existed.
 site_db_candidates() { local n="${1//-/_}"; printf 'dev_%s\nwp_%s\n' "${n:0:60}" "${n:0:60}"; }
 
+# wp-cli runs under whichever php launches its shebang — on a fresh machine
+# that is brew's default php with a stock 128M memory_limit, and
+# `wp core download` OOMs unpacking WordPress. Conf.d fixes only cover one
+# PHP version; pinning the limit at the call covers them all.
+WP_BIN=""
+wp() {
+  [[ -n "$WP_BIN" ]] || WP_BIN="$(type -P wp)"
+  [[ -n "$WP_BIN" ]] || { bad "wp-cli not found:  brew install wp-cli"; return 1; }
+  php -d memory_limit=512M "$WP_BIN" "$@"
+}
+
 gen_password() {
   # No pipes: `tr ... | head -c N` makes head close the pipe early, SIGPIPEs tr,
   # and with `set -o pipefail` that aborts the whole script — intermittently,
@@ -526,7 +537,7 @@ cmd_new() {
     bad "Site name must be lowercase letters, digits and hyphens (no spaces or underscores)."; exit 1; }
 
   case "$type" in
-    wordpress) command -v wp >/dev/null || { bad "wp-cli not found:  brew install wp-cli"; exit 1; } ;;
+    wordpress) type -P wp >/dev/null || { bad "wp-cli not found:  brew install wp-cli"; exit 1; } ;;
     laravel)   command -v composer >/dev/null || { bad "composer not found:  brew install composer"; exit 1; } ;;
   esac
   mysql_root -N -e "SELECT 1" >/dev/null 2>&1 || { bad "Cannot connect to MySQL as ${DB_ADMIN_USER:-root}."; exit 1; }
