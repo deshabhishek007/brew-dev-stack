@@ -4,13 +4,19 @@
 [![fresh install](https://github.com/deshabhishek007/brew-dev-stack/actions/workflows/install-test.yml/badge.svg)](https://github.com/deshabhishek007/brew-dev-stack/actions/workflows/install-test.yml)
 
 **Your entire local PHP environment in plain files you can read.**
+One `install.sh` on top of Homebrew. No app owns your ports, no privileged helper,
+nothing listens beyond `127.0.0.1`.
 
-One `install.sh` on top of Homebrew gives you nginx with trusted HTTPS, per-site PHP
-versions, MySQL and PostgreSQL, mail that can never reach a real inbox, Xdebug, Redis,
-public tunnels for webhook testing, one-command WordPress and Laravel sites — and a
-read-only dashboard at `https://devstack.test`.
-
-No app owns your ports. No privileged helper. Nothing listens beyond `127.0.0.1`.
+| | |
+|---|---|
+| **Web** | nginx · trusted local HTTPS via mkcert · `*.test` DNS via dnsmasq |
+| **PHP** | 8.2 / 8.3 / 8.4 / 8.5 — switchable globally **or per site** · Xdebug (trigger-based) |
+| **Databases** | MySQL · PostgreSQL + pgvector · Redis · Adminer & phpMyAdmin UIs |
+| **Sites** | one-command **WordPress**, **Laravel** or plain PHP — database, config, certificate included |
+| **Mail** | Mailpit — every `mail()` captured, nothing can reach a real inbox |
+| **Laravel** | managed `queue:work` and `schedule:run` workers per site |
+| **Webhooks** | Cloudflare quick tunnels — public URL, no account, hostname rewritten on the fly |
+| **Cockpit** | read-only dashboard at `https://devstack.test` · `devstack` CLI · `--json` for scripts |
 
 ![the devstack dashboard](docs/dashboard.png)
 
