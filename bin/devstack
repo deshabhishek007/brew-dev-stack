@@ -55,7 +55,8 @@ usage() {
 Usage: devstack <command> [options]
 
 Sites
-  new <name> [--type=wordpress|laravel|plain]  create site, database, certificate
+  new <name> [--type=wordpress|laravel|plain] [--db=mysql|pgsql]
+                                               create site, database, certificate
   list [--json]                                all sites: type, repo, URL
   rm <name> [--keep-db] [--keep-files]         delete site and database
   creds <name>                                 show a site's database credentials
@@ -519,16 +520,23 @@ gen_password() {
 mysql_root() { mysql -u"${DB_ADMIN_USER:-root}" ${DB_ADMIN_PASS:+-p"$DB_ADMIN_PASS"} "$@"; }
 
 cmd_new() {
-  local site="${1:-}" type="wordpress"
+  local site="${1:-}" type="wordpress" dbkind="mysql"
   shift || true
   for a in "$@"; do
     case "$a" in
       --type=*) type="${a#--type=}" ;;
+      --db=*)   dbkind="${a#--db=}" ;;
       *) bad "Unknown option: $a"; exit 1 ;;
     esac
   done
-  [[ -n "$site" ]] || { bad "Usage: devstack new <sitename> [--type=wordpress|laravel|plain]"; exit 1; }
+  [[ -n "$site" ]] || { bad "Usage: devstack new <sitename> [--type=wordpress|laravel|plain] [--db=mysql|pgsql]"; exit 1; }
   case "$type" in wordpress|laravel|plain) ;; *) bad "Unknown type '$type'. Use wordpress, laravel or plain."; exit 1 ;; esac
+  case "$dbkind" in mysql|pgsql) ;; *) bad "Unknown database '$dbkind'. Use mysql or pgsql."; exit 1 ;; esac
+  [[ "$type" == "wordpress" && "$dbkind" == "pgsql" ]] && { bad "WordPress requires MySQL."; exit 1; }
+  if [[ "$dbkind" == "pgsql" ]]; then
+    command -v createdb >/dev/null || { bad "PostgreSQL client tools not found:  brew install postgresql@18"; exit 1; }
+    psql -h 127.0.0.1 -d postgres -c 'SELECT 1' >/dev/null 2>&1 || { bad "PostgreSQL is not responding on 127.0.0.1:5432."; exit 1; }
+  fi
 
   load_config
   [[ -n "${ADMIN_EMAIL:-}" ]] || { bad "Not configured. Run:  devstack config"; exit 1; }
@@ -554,20 +562,30 @@ cmd_new() {
   adminpass="$(gen_password)"
   url="https://$site.$TLD"
 
-  if grep -q . <<<"$(mysql_root -N -e "SHOW DATABASES LIKE '$db'" 2>/dev/null || true)"; then
-    bad "Database '$db' already exists. Drop it or choose another name."; exit 1
-  fi
-
   echo "Creating $site"
   mkdir -p "$dir"
 
   info_step() { printf '  \033[36m·\033[0m %s\n' "$*"; }
 
-  info_step "database $db"
-  mysql_root -e "CREATE DATABASE \`$db\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-  mysql_root -e "CREATE USER IF NOT EXISTS '$dbuser'@'127.0.0.1' IDENTIFIED BY '$dbpass';"
-  mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$dbuser'@'127.0.0.1';"
-  mysql_root -e "FLUSH PRIVILEGES;"
+  if [[ "$dbkind" == "pgsql" ]]; then
+    # Local Postgres trusts loopback connections, so the database is owned by
+    # your macOS user with no password — there is nothing to generate or leak.
+    dbuser="$USER"; dbpass=""
+    if psql -h 127.0.0.1 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null | grep -q 1; then
+      bad "Database '$db' already exists. Drop it or choose another name."; rmdir "$dir" 2>/dev/null; exit 1
+    fi
+    info_step "postgres database $db"
+    createdb -h 127.0.0.1 "$db"
+  else
+    if grep -q . <<<"$(mysql_root -N -e "SHOW DATABASES LIKE '$db'" 2>/dev/null || true)"; then
+      bad "Database '$db' already exists. Drop it or choose another name."; rmdir "$dir" 2>/dev/null; exit 1
+    fi
+    info_step "database $db"
+    mysql_root -e "CREATE DATABASE \`$db\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    mysql_root -e "CREATE USER IF NOT EXISTS '$dbuser'@'127.0.0.1' IDENTIFIED BY '$dbpass';"
+    mysql_root -e "GRANT ALL PRIVILEGES ON \`$db\`.* TO '$dbuser'@'127.0.0.1';"
+    mysql_root -e "FLUSH PRIVILEGES;"
+  fi
 
   case "$type" in
 
@@ -604,9 +622,9 @@ PHPEOF
     /usr/bin/sed -i '' \
       -e "s|^APP_URL=.*|APP_URL=$url|" \
       -e "s|^APP_NAME=.*|APP_NAME=$site|" \
-      -e "s|^DB_CONNECTION=.*|DB_CONNECTION=mysql|" \
+      -e "s|^DB_CONNECTION=.*|DB_CONNECTION=$([[ "$dbkind" == pgsql ]] && echo pgsql || echo mysql)|" \
       -e "s|^# *DB_HOST=.*|DB_HOST=127.0.0.1|" \
-      -e "s|^# *DB_PORT=.*|DB_PORT=3306|" \
+      -e "s|^# *DB_PORT=.*|DB_PORT=$([[ "$dbkind" == pgsql ]] && echo 5432 || echo 3306)|" \
       -e "s|^# *DB_DATABASE=.*|DB_DATABASE=$db|" \
       -e "s|^# *DB_USERNAME=.*|DB_USERNAME=$dbuser|" \
       -e "s|^# *DB_PASSWORD=.*|DB_PASSWORD=$dbpass|" \
@@ -649,8 +667,9 @@ Served at $url from \`public/\`.
 Database: \`$db\` (user \`$dbuser\`) — credentials are in this file only, so
 move them somewhere your app reads before committing anything.
 
+    DB_CONNECTION=$dbkind
     DB_HOST=127.0.0.1
-    DB_PORT=3306
+    DB_PORT=$([[ "$dbkind" == pgsql ]] && echo 5432 || echo 3306)
     DB_DATABASE=$db
     DB_USERNAME=$dbuser
     DB_PASSWORD=$dbpass
@@ -766,10 +785,14 @@ cmd_rm() {
   local dir="$SITES_DIR/$site"
   [[ -e "$dir" ]] || { bad "No such site: $dir"; exit 1; }
 
-  local db="" dbuser db_exists=0 cand
+  local db="" dbuser db_exists=0 dbengine="mysql" cand
   while IFS= read -r cand; do
     if grep -q . <<<"$(mysql_root -N -e "SHOW DATABASES LIKE '$cand'" 2>/dev/null || true)"; then
       db="$cand"; db_exists=1; break
+    fi
+    if command -v psql >/dev/null && \
+       psql -h 127.0.0.1 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$cand'" 2>/dev/null | grep -q 1; then
+      db="$cand"; db_exists=1; dbengine="pgsql"; break
     fi
   done < <(site_db_candidates "$site")
   [[ -z "$db" ]] && db="$(site_db_name "$site")"
@@ -778,7 +801,9 @@ cmd_rm() {
   echo "About to remove:"
   [[ "$keep_files" == "0" ]] && echo "  files     $dir  ($(du -sh "$dir" 2>/dev/null | cut -f1))" \
                              || echo "  files     kept (--keep-files)"
-  if [[ "$db_exists" == "1" && "$keep_db" == "0" ]]; then
+  if [[ "$db_exists" == "1" && "$keep_db" == "0" && "$dbengine" == "pgsql" ]]; then
+    echo "  database  $db  (postgres)"
+  elif [[ "$db_exists" == "1" && "$keep_db" == "0" ]]; then
     echo "  database  $db  ($(mysql_root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$db'" 2>/dev/null) tables)"
     echo "  db user   $dbuser@127.0.0.1"
   elif [[ "$db_exists" == "1" ]]; then
@@ -801,8 +826,12 @@ cmd_rm() {
   [[ "$answer" == "$site" ]] || { echo "  Names did not match. Aborted."; exit 0; }
 
   if [[ "$db_exists" == "1" && "$keep_db" == "0" ]]; then
-    mysql_root -e "DROP DATABASE \`$db\`;" && ok "dropped $db"
-    mysql_root -e "DROP USER IF EXISTS '$dbuser'@'127.0.0.1';" && ok "dropped user $dbuser"
+    if [[ "$dbengine" == "pgsql" ]]; then
+      dropdb -h 127.0.0.1 "$db" && ok "dropped $db (postgres)"
+    else
+      mysql_root -e "DROP DATABASE \`$db\`;" && ok "dropped $db"
+      mysql_root -e "DROP USER IF EXISTS '$dbuser'@'127.0.0.1';" && ok "dropped user $dbuser"
+    fi
   fi
   if [[ "$keep_files" == "0" ]]; then
     rm -rf "$dir" && ok "removed $dir"
@@ -1343,13 +1372,27 @@ cmd_creds() {
     exit 1
   fi
 
+  # Which engine? Laravel and plain sites record it; wp-config is always MySQL.
+  local conn="mysql"
+  [[ -f "$dir/.env" ]] && conn="$(sed -nE 's/^DB_CONNECTION=(.*)$/\1/p' "$dir/.env" | head -1)"
+  [[ "$src" == "README.md (plain site)" ]] && \
+    conn="$(sed -nE 's/^ *DB_CONNECTION=(.*)$/\1/p' "$dir/README.md" | head -1)"
+  [[ -n "$conn" ]] || conn="mysql"
+
   echo "Database credentials for $site  (from $src)"
+  printf '  %-10s %s\n' engine   "$conn"
   printf '  %-10s %s\n' host     "${dbhost:-127.0.0.1}"
   printf '  %-10s %s\n' database "${db:-?}"
   printf '  %-10s %s\n' user     "${dbuser:-?}"
-  printf '  %-10s %s\n' password "${dbpass:-?}"
-  echo
-  echo "  connect:  mysql -h ${dbhost:-127.0.0.1} -u ${dbuser:-USER} -p'${dbpass:-}' ${db:-}"
+  if [[ "$conn" == "pgsql" ]]; then
+    printf '  %-10s %s\n' password "${dbpass:-"(none — local Postgres trusts loopback connections)"}"
+    echo
+    echo "  connect:  psql -h ${dbhost:-127.0.0.1} -U ${dbuser:-$USER} ${db:-}"
+  else
+    printf '  %-10s %s\n' password "${dbpass:-?}"
+    echo
+    echo "  connect:  mysql -h ${dbhost:-127.0.0.1} -u ${dbuser:-USER} -p'${dbpass:-}' ${db:-}"
+  fi
 
   if [[ -f "$dir/wp-config.php" ]]; then
     echo

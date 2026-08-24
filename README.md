@@ -12,7 +12,7 @@ nothing listens beyond `127.0.0.1`.
 | **Web** | nginx · trusted local HTTPS via mkcert · `*.test` DNS via dnsmasq |
 | **PHP** | 8.2 / 8.3 / 8.4 / 8.5 — switchable globally **or per site** · Xdebug (trigger-based) |
 | **Databases** | MySQL · PostgreSQL + pgvector · Redis · Adminer & phpMyAdmin UIs |
-| **Sites** | one-command **WordPress**, **Laravel** or plain PHP — database, config, certificate included |
+| **Sites** | one-command **WordPress**, **Laravel** or plain PHP — database (MySQL **or Postgres**), config, certificate included |
 | **Mail** | Mailpit — every `mail()` captured, nothing can reach a real inbox |
 | **Laravel** | managed `queue:work` and `schedule:run` workers per site |
 | **Webhooks** | Cloudflare quick tunnels — public URL, no account, hostname rewritten on the fly |
