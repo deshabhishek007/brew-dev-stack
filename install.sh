@@ -143,6 +143,16 @@ is_dry || mkdir -p "$BREW"/etc/nginx/{servers,certs} "$BREW"/var/log/nginx "$BRE
 backup "$BREW/etc/nginx/nginx.conf"
 render "$SCRIPT_DIR/config/nginx.conf.template"    "$BREW/etc/nginx/nginx.conf"
 render "$SCRIPT_DIR/config/local-dev.conf.template" "$BREW/etc/nginx/servers/local-dev.conf"
+render "$SCRIPT_DIR/config/tunnel.conf.template"     "$BREW/etc/nginx/servers/zz-tunnel.conf"
+if ! is_dry; then
+  # The vhosts include three generated files; nginx refuses to start if any is
+  # missing. devstack php and devstack tunnel rewrite them later, but the
+  # installer must seed them or the very first `nginx` start fails with
+  # [emerg] on a clean machine.
+  [[ -f "$BREW/etc/nginx/php-versions.map" ]] ||     printf 'default %s;\n' "$BREW/var/run/php${PHPSHORT}-fpm.sock" > "$BREW/etc/nginx/php-versions.map"
+  printf 'set $t_root "/var/empty";\nset $t_sock "/dev/null";\n' > "$BREW/etc/nginx/tunnel-target.conf"
+  printf 'sub_filter "http://placeholder.invalid" "https://$host";\n' > "$BREW/etc/nginx/tunnel-subs.conf"
+fi
 ok "nginx"
 
 render "$SCRIPT_DIR/config/dnsmasq-tld.conf.template" "$BREW/etc/dnsmasq.d/${TLD}-tld.conf"
