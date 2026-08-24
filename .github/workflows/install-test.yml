@@ -112,6 +112,8 @@ jobs:
             printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}'
             printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"stack_status","arguments":{}}}'
           } | bin/devstack-mcp > /tmp/mcp.jsonl
+          echo "--- raw responses (first 300 bytes each) ---"
+          n=0; while IFS= read -r l; do n=$((n+1)); printf '%d: %.300s\n' "$n" "$l"; done < /tmp/mcp.jsonl
           python3 - <<'PYEOF'
           import json
           lines = [json.loads(l) for l in open('/tmp/mcp.jsonl')]
