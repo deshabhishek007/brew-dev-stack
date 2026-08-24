@@ -183,18 +183,20 @@ elif [[ -f "$FPM_POOL" ]]; then
   done
   # php-fpm has no stderr, so an unwritable error_log discards every error from
   # a web request silently. Point it somewhere real.
-  cat > "$BREW/etc/php/$PHP_VERSION/conf.d/zz-error-log.ini" <<EOF
+  # EVERY installed PHP version, not just ours: wp-cli drags in the default
+  # `php` formula, and a CLI running under it would otherwise have the stock
+  # sendmail_path (mail escapes) and 128M memory_limit (wp-cli OOMs).
+  for phpdir in "$BREW"/etc/php/*/conf.d; do
+    [[ -d "$phpdir" ]] || continue
+    cat > "$phpdir/zz-error-log.ini" <<EOF
 error_log = "$BREW/var/log/php-error.log"
 log_errors = On
 display_errors = On
 display_startup_errors = On
 error_reporting = E_ALL
-
-; Stock memory_limit is 128M, which is not enough for `wp core download` to
-; unpack WordPress — site creation dies with an OOM fatal on a fresh machine.
-; 512M is a comfortable ceiling for local development tooling.
 memory_limit = 512M
 EOF
+  done
   touch "$BREW/var/log/php-error.log"
   ok "php-fpm ($PHP_VERSION) on unix socket, errors to $BREW/var/log/php-error.log"
 else

@@ -222,8 +222,7 @@ cmd_doctor() {
   elif [[ -z "$sp" ]]; then
     warn "php sendmail_path is empty — mail() will fail"
   else
-    bad "php mail() goes to $sp — a local site could email a real address"
-    echo "       install a catcher with:  devstack install mailpit"
+    bad "php mail() goes to $sp — a local site could email a real address. Install a catcher with: devstack install mailpit"
   fi
 
   if (( JSON )); then
@@ -969,14 +968,17 @@ EOF
     bad "mailpit did not come up — see $BREW/var/log/mailpit.log"; return 1
   fi
 
-  # One setting catches every PHP application, WordPress included — no plugin.
-  mkdir -p "$(dirname "$ini")"
-  cat > "$ini" <<EOF
+  # One setting catches every PHP application — and it must cover EVERY
+  # installed PHP version, or a CLI running under the default `php` formula
+  # (wp-cli pulls it in) still delivers real mail.
+  local phpdir
+  for phpdir in "$BREW"/etc/php/*/conf.d; do
+    [[ -d "$phpdir" ]] || continue
+    cat > "$phpdir/zz-mailpit.ini" <<EOF
 ; Route all PHP mail() through Mailpit instead of the system MTA.
-; Otherwise mail() hands off to postfix, which attempts real MX delivery: a
-; local test site can email a real person, and you cannot see what was sent.
 sendmail_path = "$BREW/opt/mailpit/bin/mailpit sendmail -S 127.0.0.1:1025"
 EOF
+  done
   brew services restart "php@$PHP_VERSION" >/dev/null 2>&1
   ok "php mail() routed to mailpit"
 
