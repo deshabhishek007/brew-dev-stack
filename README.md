@@ -1,11 +1,31 @@
-# brew-dev-stack
+# ☕ brew-dev-stack
 
-A local PHP development environment built entirely from Homebrew packages you own,
-with no application managing it for you.
+[![lint](https://github.com/deshabhishek007/brew-dev-stack/actions/workflows/lint.yml/badge.svg)](https://github.com/deshabhishek007/brew-dev-stack/actions/workflows/lint.yml)
+[![fresh install](https://github.com/deshabhishek007/brew-dev-stack/actions/workflows/install-test.yml/badge.svg)](https://github.com/deshabhishek007/brew-dev-stack/actions/workflows/install-test.yml)
 
-`nginx` + `dnsmasq` + `php-fpm` + `mkcert`, optionally MySQL and phpMyAdmin. Every
-project directory under `~/sites` is served automatically at `https://<name>.test`
-with a trusted certificate. No per-site configuration.
+**Your entire local PHP environment in plain files you can read.**
+
+One `install.sh` on top of Homebrew gives you nginx with trusted HTTPS, per-site PHP
+versions, MySQL and PostgreSQL, mail that can never reach a real inbox, Xdebug, Redis,
+public tunnels for webhook testing, one-command WordPress and Laravel sites — and a
+read-only dashboard at `https://devstack.test`.
+
+No app owns your ports. No privileged helper. Nothing listens beyond `127.0.0.1`.
+
+![the devstack dashboard](docs/dashboard.png)
+
+## Sixty seconds after installing
+
+```bash
+devstack new blog                 # a full WordPress: database, config, admin login
+devstack new api --type=laravel   # composer create-project, .env wired, migrated
+devstack tunnel blog              # a public URL for Stripe / GitHub webhooks
+devstack php 8.2 --site=legacy    # pin one site; every other stays on the default
+devstack logs blog                # its debug.log, live
+```
+
+Every directory under `~/sites` is already serving at `https://<name>.test` with a
+certificate your browser trusts:
 
 ```
 ~/sites/blog        →  https://blog.test
@@ -13,28 +33,32 @@ with a trusted certificate. No per-site configuration.
 ~/sites/anything    →  https://anything.test
 ```
 
-## Why
+## Why this exists
 
-Tools like Laravel Herd and Valet work well, but they own ports 80 and 443, install a
-root privileged helper, ship their own PHP builds, and write to `/etc/resolver`. When
-something breaks, or when you migrate between them, the leftovers are invisible and
-they persist for years.
+It grew out of cleaning up a real machine: years of Valet-then-Herd leftovers — a
+root php-fpm daemon from an uninstalled tool, a dnsmasq chain pointing into an empty
+directory, TLS still served from a CA of a tool abandoned two migrations ago. Those
+tools work, but they own ports 80 and 443, install root helpers, ship their own PHP
+builds — and when you leave, the leftovers stay, invisibly, for years.
 
-This is the same setup expressed as plain configuration files:
+Here the same conveniences are plain configuration you own:
 
 | Layer | Package | Config |
 |---|---|---|
 | DNS for `*.test` | `dnsmasq` | `$(brew --prefix)/etc/dnsmasq.d/test-tld.conf` |
 | Web server | `nginx` | `$(brew --prefix)/etc/nginx/servers/local-dev.conf` |
-| PHP | `php@8.3` | unix socket, per-version log |
-| TLS | `mkcert` | locally-trusted certificate |
+| PHP, per site | `php@8.x` | `$(brew --prefix)/etc/nginx/php-versions.map` |
+| TLS | `mkcert` | one certificate, one SAN per site |
+| Mail | `mailpit` | `sendmail_path` redirected — nothing escapes |
+| Databases | `mysql`, `postgresql` | tuned for a laptop, not a server |
 
-Also installed: `wp-cli`, `composer`, `mysql`, `phpmyadmin`, and optionally
-`postgresql` with `pgvector`.
+Also there when you want them: `wp-cli`, `composer`, `phpmyadmin`, Adminer, Xdebug,
+Redis, `pgvector`, Cloudflare quick tunnels, and managed Laravel queue/schedule
+workers.
 
-Everything comes from Homebrew except two things, both by necessity:
-**Adminer** (no Homebrew formula exists — fetched from adminer.org and checked before
-installing) and **WordPress core** (fetched by `wp-cli` when you create a site).
+Everything comes from Homebrew except two things, both by necessity: **Adminer** (no
+formula exists — fetched from adminer.org and verified before installing) and
+**WordPress core** (fetched by `wp-cli` when you create a site).
 
 Nothing is hidden. `brew upgrade` maintains the rest.
 
