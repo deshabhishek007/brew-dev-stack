@@ -1103,7 +1103,10 @@ EOF
   # buries the one thing you need. Run it quietly, surface the URL ourselves,
   # and let anything at warn or above through.
   local cflog; cflog="$(mktemp -t devstack-tunnel)"
-  cloudflared tunnel --url "http://127.0.0.1:80" --no-autoupdate --loglevel info > "$cflog" 2>&1 &
+  # --metrics is pinned so the dashboard can ask /quicktunnel for the public
+  # hostname; otherwise cloudflared picks a port and only prints it.
+  cloudflared tunnel --url "http://127.0.0.1:80" --no-autoupdate --loglevel info \
+    --metrics 127.0.0.1:20241 > "$cflog" 2>&1 &
   local cfpid=$!
 
   cleanup_tunnel() {

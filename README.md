@@ -268,35 +268,25 @@ emits `http://` assets onto an `https` page and browsers block them.
 
 ## Dashboard
 
-Once installed, open **`https://devstack.test`** — every site with its type and
-repository, the health checks, and links to Mailpit, Adminer and phpMyAdmin.
+Once installed, open **`https://devstack.test`**.
 
-If a tunnel is open it says so at the top, with the public address — a forgotten
-tunnel leaves a site reachable from the internet, and that is worth stating without
-being asked.
+Four tabs, each a single screen:
 
-It greets you by the name from your config, then gives you, on one page: what is
-running, links to the tools, your sites newest-first, **the full command reference**,
-and **how the stack is put together** — the layers, where each config lives, and the
-non-obvious decisions behind them.
+| | |
+|---|---|
+| **Overview** | anything needing attention, a live tunnel with its public URL, the tools, and what you worked on recently |
+| **Sites** | all of them, searchable |
+| **Commands** | the full reference, parsed from `devstack help` so it cannot drift from the CLI |
+| **Reference** | each layer, its package and config path, and the reasoning behind the non-obvious decisions |
 
-The command reference is parsed from `devstack help` at render time, so it cannot drift
-out of step with the CLI.
+Your own projects only — `devstack`, `adminer` and `phpmyadmin` are this stack's tooling
+and belong under Tools, not in a list of your work. Directories with nothing servable in
+them are left out too. Health checks appear **only when something is wrong**.
 
-Only real sites are listed. A directory under `~/sites` with nothing servable in it is
-a folder, not a site, and listing all of them buries the handful you work on. Health
-checks appear **only when something is wrong**.
+A live tunnel is called out with its address, read from cloudflared's own
+`/quicktunnel` endpoint, so it works for a tunnel that was already running.
 
-It is **read-only by design**. Any page your browser loads can issue requests to
-127.0.0.1, so a local control panel able to create or delete sites would be reachable
-by a malicious page through CSRF or DNS rebinding. Binding to localhost stops your
-network, not your browser. Destructive operations stay in the terminal, where they need
-your shell.
-
-The page reads the same `--json` output the CLI produces, cached for 15 seconds —
-walking 87 sites and running `git` on each takes about 2.5s.
-
-## Machine-readable output
+It is **read-only by design**.## Machine-readable output
 
 ```bash
 bin/devstack list --json
