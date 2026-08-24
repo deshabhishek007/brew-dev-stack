@@ -274,14 +274,23 @@ Four tabs, each a single screen:
 
 | | |
 |---|---|
-| **Overview** | anything needing attention, a live tunnel with its public URL, the tools, and what you worked on recently |
-| **Sites** | all of them, searchable |
+| **Overview** | sites that are down, recent PHP errors, a live tunnel with its public URL, the tools, and what you worked on recently |
+| **Sites** | all of them, searchable, each with a health dot, its PHP version when pinned, and any running workers |
 | **Commands** | the full reference, parsed from `devstack help` so it cannot drift from the CLI |
 | **Reference** | each layer, its package and config path, and the reasoning behind the non-obvious decisions |
 
 Your own projects only — `devstack`, `adminer` and `phpmyadmin` are this stack's tooling
 and belong under Tools, not in a list of your work. Directories with nothing servable in
 them are left out too. Health checks appear **only when something is wrong**.
+
+Every site is checked over HTTP in parallel, so a site returning 500 does not look
+identical to a healthy one. **401 and 403 are treated as protected rather than broken**,
+and 404 at a root is often deliberate for an API — only a server error or no response at
+all raises an alarm.
+
+Recent PHP errors are summarised from the log. A single PHP error spans several lines —
+the message, then a stack trace — so only the message lines are counted, and repeats of
+the same error collapse into one with a count. Otherwise two warnings look like five.
 
 A live tunnel is called out with its address, read from cloudflared's own
 `/quicktunnel` endpoint, so it works for a tunnel that was already running.

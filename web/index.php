@@ -79,6 +79,138 @@ function live_tunnel(string $brew): ?array
     return ['site' => $site, 'url' => $url];
 }
 
+/**
+ * HTTP status for every site, in parallel.
+ *
+ * Requests 127.0.0.1 with a Host header rather than the public name: no DNS,
+ * no TLS handshake, and it exercises the same vhost. Cached separately from
+ * the site list because it is the expensive part.
+ */
+function site_health(array $sites): array
+{
+    $cache = sys_get_temp_dir() . '/devstack-web-health.json';
+    if (is_file($cache) && (time() - filemtime($cache)) < 30) {
+        return json_decode((string) file_get_contents($cache), true) ?: [];
+    }
+
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach ($sites as $s) {
+        $host = parse_url($s['url'], PHP_URL_HOST);
+        if (!$host) continue;
+        $ch = curl_init('http://127.0.0.1/');
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER     => ["Host: $host"],
+            CURLOPT_NOBODY         => true,
+            CURLOPT_TIMEOUT        => 2,
+            CURLOPT_CONNECTTIMEOUT => 2,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+        ]);
+        curl_multi_add_handle($mh, $ch);
+        $handles[$s['name']] = $ch;
+    }
+
+    do {
+        curl_multi_exec($mh, $running);
+        curl_multi_select($mh, 0.1);
+    } while ($running > 0);
+
+    $out = [];
+    foreach ($handles as $name => $ch) {
+        $out[$name] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+    }
+    curl_multi_close($mh);
+
+    @file_put_contents($cache, json_encode($out));
+    return $out;
+}
+
+/** A site is "fine" on any 2xx or 3xx; a redirect to a login page is normal. */
+function health_label(int $code): array
+{
+    return match (true) {
+        $code === 0                     => ['down', 'no response'],
+        $code >= 200 && $code < 400     => ['ok',   (string) $code],
+        // Deliberately protected, not broken — do not raise these as faults.
+        $code === 401 || $code === 403  => ['prot', (string) $code],
+        $code >= 400 && $code < 500     => ['warn', (string) $code],
+        default                         => ['bad',  (string) $code],
+    };
+}
+
+/** Which PHP version serves each site, from the nginx map. */
+function php_versions(string $brew): array
+{
+    $map = @file_get_contents("$brew/etc/nginx/php-versions.map") ?: '';
+    $out = ['default' => null];
+    foreach (explode("\n", $map) as $line) {
+        if (preg_match('~^\s*(\S+)\s+.*/php(\d)(\d+)-fpm\.sock~', $line, $m)) {
+            $out[$m[1]] = $m[2] . '.' . $m[3];
+        }
+    }
+    return $out;
+}
+
+/** Recent PHP errors, newest first. */
+function recent_errors(string $brew, int $limit = 5): array
+{
+    $f = "$brew/var/log/php-error.log";
+    if (!is_file($f)) return ['count' => 0, 'lines' => []];
+    // Read only the tail; these logs grow without bound.
+    $fh = fopen($f, 'r');
+    if (!$fh) return ['count' => 0, 'lines' => []];
+    fseek($fh, max(0, filesize($f) - 65536));
+    $tail = (string) stream_get_contents($fh);
+    fclose($fh);
+
+    $cut = time() - 86400;
+    $found = []; $seen = [];
+    foreach (array_reverse(explode("\n", $tail)) as $line) {
+        if (!preg_match('~^\[(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}:\d{2})[^]]*\]\s*(.*)$~', $line, $m)) continue;
+        $ts = strtotime(str_replace('-', ' ', $m[1]));
+        if ($ts === false || $ts < $cut) continue;
+        // A PHP error spans several lines — the message, then "PHP Stack trace:"
+        // and numbered frames. Counting every line turns two warnings into five.
+        if (!preg_match('~^PHP (Warning|Fatal error|Parse error|Notice|Deprecated|Recoverable error):~', $m[2])) continue;
+        if (stripos($m[2], 'probe') !== false) continue;      // our own health probes
+        // The same warning repeated hundreds of times is one thing to fix.
+        $key = preg_replace('~\d+~', 'N', mb_strimwidth($m[2], 0, 120));
+        if (isset($seen[$key])) { $seen[$key]++; continue; }
+        $seen[$key] = 1;
+        $found[] = ['at' => $ts, 'msg' => $m[2], 'key' => $key];
+        if (count($found) >= $limit) break;
+    }
+    foreach ($found as &$f) { $f['times'] = $seen[$f['key']] ?? 1; }
+    return ['count' => count($found), 'lines' => $found];
+}
+
+/** How many messages Mailpit is holding. */
+function mail_count(): ?int
+{
+    $ch = curl_init('http://127.0.0.1:8025/api/v1/messages?limit=1');
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 1]);
+    $body = curl_exec($ch);
+    curl_close($ch);
+    if (!$body) return null;
+    $d = json_decode((string) $body, true);
+    return isset($d['total']) ? (int) $d['total'] : null;
+}
+
+/** Laravel workers this stack is running, by site. */
+function workers(): array
+{
+    $out = [];
+    foreach (explode("\n", (string) shell_exec("launchctl list 2>/dev/null")) as $line) {
+        if (preg_match('~dev\.brewdevstack\.(\S+)\.(queue|schedule)$~', $line, $m)) {
+            $out[$m[1]][] = $m[2];
+        }
+    }
+    return $out;
+}
+
 function ago(int $ts): string
 {
     $d = time() - $ts;
@@ -107,13 +239,26 @@ $sites = array_values(array_filter(
 usort($sites, fn($a, $b) => $b['modified'] <=> $a['modified']);
 $problems = array_values(array_filter($checks, fn($c) => $c['status'] !== 'pass'));
 
+$health   = site_health($sites);
+$phpvers  = php_versions($BREW);
+$errors   = recent_errors($BREW);
+$mail     = mail_count();
+$wk       = workers();
+// A fault is no response or a server error. 401/403 are protection and 404
+// is often deliberate for an API root, so neither raises an alarm.
+$broken   = array_values(array_filter($sites, function ($s) use ($health) {
+    $c = $health[$s['name']] ?? 0;
+    return $c === 0 || $c >= 500;
+}));
+
 $name  = trim(explode(' ', config_value('ADMIN_NAME'))[0] ?? '');
 $hour  = (int) date('G');
 $greet = $hour < 5 ? 'Still up' : ($hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening'));
 
 $names = array_column($all, 'name');
 $tools = [
-    ['Mailpit',    "https://mailpit.$tld",    'Everything your sites send', true],
+    ['Mailpit',    "https://mailpit.$tld",
+        $mail === null ? 'not running' : ($mail === 0 ? 'no messages' : $mail . ' message' . ($mail === 1 ? '' : 's')), true],
     ['Adminer',    "https://adminer.$tld",    'MySQL · Postgres · SQLite',  in_array('adminer', $names, true)],
     ['phpMyAdmin', "https://phpmyadmin.$tld", 'MySQL',                     in_array('phpmyadmin', $names, true)],
 ];
@@ -211,6 +356,14 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 .note:last-child{border-bottom:0}
 .note b{color:var(--fg);font-weight:600;display:block;margin-bottom:2px}
 .note code,.alert code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--code);padding:1px 5px;border-radius:4px;white-space:nowrap}
+.hd{width:7px;height:7px;border-radius:50%;flex:none;background:var(--faint)}
+.hd.ok{background:var(--ok)}.hd.warn{background:var(--warn)}
+.hd.bad,.hd.down{background:var(--fail)}
+.hd.prot{background:var(--faint)}
+.pill{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:0 7px;flex:none}
+.alert .err{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);
+  margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alert a{color:var(--accent);text-decoration:none}
 .hidden{display:none}
 @media(max-width:620px){table.arch td:last-child{display:none}}
 </style>
@@ -240,6 +393,25 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
       </div>
     <?php endforeach; ?>
 
+    <?php if ($broken): ?>
+      <div class="alert fail">
+        <b><?= count($broken) ?> site<?= count($broken) === 1 ? '' : 's' ?> not responding properly</b>
+        <span><?php foreach ($broken as $b): [$cls, $lbl] = health_label($health[$b['name']] ?? 0); ?>
+          <a href="<?= e($b['url']) ?>"><?= e($b['name']) ?></a> <?= e($lbl) ?><?= $b === end($broken) ? '' : ' · ' ?>
+        <?php endforeach; ?></span>
+      </div>
+    <?php endif; ?>
+
+    <?php if ($errors['count']): ?>
+      <div class="alert warn">
+        <b><?= $errors['count'] ?> PHP error<?= $errors['count'] === 1 ? '' : 's' ?> in the last 24 hours</b>
+        <?php foreach (array_slice($errors['lines'], 0, 3) as $l): ?>
+          <span class="err"><?= e(mb_strimwidth($l['msg'], 0, 140, '…')) ?><?= ($l['times'] ?? 1) > 1 ? ' ×' . $l['times'] : '' ?></span>
+        <?php endforeach; ?>
+        <span style="margin-top:4px"><code>devstack logs php</code> for the rest.</span>
+      </div>
+    <?php endif; ?>
+
     <?php if ($tunnel !== null): ?>
       <div class="alert warn">
         <b>A public tunnel is open<?= $tunnel['site'] ? ' — ' . e($tunnel['site']) : '' ?></b>
@@ -256,8 +428,10 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 
     <h3 class="sub">Recently worked on</h3>
     <div class="card" style="margin-top:0">
-      <?php foreach (array_slice($sites, 0, RECENT) as $s): ?>
+      <?php foreach (array_slice($sites, 0, RECENT) as $s):
+        [$cls, $lbl] = health_label($health[$s['name']] ?? 0); ?>
         <a class="row" href="<?= e($s['url']) ?>">
+          <span class="hd <?= $cls ?>" title="HTTP <?= e($lbl) ?>"></span>
           <span class="nm"><?= e($s['name']) ?></span>
           <span class="ty"><?= e($s['type']) ?></span>
           <span class="tm"><?= ago((int) $s['modified']) ?></span>
@@ -269,9 +443,14 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
   <section class="pane" id="sites">
     <input type="search" id="q" placeholder="Search <?= count($sites) ?> sites…" autocomplete="off">
     <div class="card" id="list">
-      <?php foreach ($sites as $s): ?>
+      <?php foreach ($sites as $s):
+        [$cls, $lbl] = health_label($health[$s['name']] ?? 0);
+        $pv = $phpvers[$s['name']] ?? null; ?>
         <a class="row" href="<?= e($s['url']) ?>">
+          <span class="hd <?= $cls ?>" title="HTTP <?= e($lbl) ?>"></span>
           <span class="nm"><?= e($s['name']) ?></span>
+          <?php if ($pv): ?><span class="pill">php <?= e($pv) ?></span><?php endif; ?>
+          <?php foreach ($wk[$s['name']] ?? [] as $w): ?><span class="pill"><?= e($w) ?></span><?php endforeach; ?>
           <span class="ty"><?= e($s['type']) ?></span>
           <span class="tm"><?= ago((int) $s['modified']) ?></span>
         </a>
