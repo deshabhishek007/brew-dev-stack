@@ -41,7 +41,11 @@ function config_value(string $key): string
 function run(string $args): array
 {
     global $BIN;
-    exec(escapeshellarg($BIN) . " $args 2>&1", $out, $code);
+    // stderr is NOT merged into the result: brew prints advisory noise there
+    // (tap-trust warnings and hints), and merging it corrupts --json output —
+    // which is exactly what happened on a clean CI machine. The child inherits
+    // this process's stderr, which MCP clients capture in their server logs.
+    exec(escapeshellarg($BIN) . " $args", $out, $code);
     return [implode("\n", $out), $code];
 }
 
