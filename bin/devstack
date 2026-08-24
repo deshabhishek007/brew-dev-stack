@@ -268,6 +268,33 @@ php_prepare() {
   for stale in "$BREW/etc/php/$ver/php-fpm.d/"*valet*.conf; do
     [[ -e "$stale" ]] && mv "$stale" "$stale.disabled"
   done
+
+  # The stack's guarantees live in conf.d and are PER VERSION. Without carrying
+  # them over, switching PHP silently reverts sendmail_path to the real MTA
+  # (mail escapes to actual inboxes), memory_limit to 128M (wp-cli OOMs), and
+  # error_log to nowhere. Extensions built by pecl cannot be carried — warn.
+  cat > "$BREW/etc/php/$ver/conf.d/zz-error-log.ini" <<CONFEOF
+error_log = "$BREW/var/log/php-error.log"
+log_errors = On
+display_errors = On
+display_startup_errors = On
+error_reporting = E_ALL
+memory_limit = 512M
+CONFEOF
+  if [[ -x "$BREW/opt/mailpit/bin/mailpit" ]]; then
+    cat > "$BREW/etc/php/$ver/conf.d/zz-mailpit.ini" <<CONFEOF
+; Route all PHP mail() through Mailpit instead of the system MTA.
+sendmail_path = "$BREW/opt/mailpit/bin/mailpit sendmail -S 127.0.0.1:1025"
+CONFEOF
+  fi
+  local missing=""
+  for ext in xdebug redis; do
+    if ls "$BREW/etc/php/"*/conf.d/zz-$ext.ini >/dev/null 2>&1 && \
+       [[ ! -f "$BREW/etc/php/$ver/conf.d/zz-$ext.ini" ]]; then
+      missing+=" $ext"
+    fi
+  done
+  [[ -n "$missing" ]] && warn "pecl extensions are built per PHP version — for $ver re-run:$(for m in $missing; do printf ' devstack install %s ·' "$m"; done | sed 's/ ·$//')"
   # Always restart: `start` on an already-running service succeeds without
   # reloading, so the pool changes above would never take effect.
   brew services restart "php@$ver" >/dev/null 2>&1
