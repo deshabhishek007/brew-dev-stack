@@ -138,9 +138,9 @@ devstack list
 
 ```
 SITE              TYPE            DOCROOT  REPO                        URL
-climaone          PHP (composer)  public/  you/climaone-amc            https://climaone.test
-ofis-management   Laravel         public/  you/ofis-management         https://ofis-management.test
-wpmeta            WordPress       root     you/wpmeta                  https://wpmeta.test
+shop              Laravel         public/  you/shop                    https://shop.test
+api               PHP (composer)  public/  you/api                     https://api.test
+blog              WordPress       root     you/blog                    https://blog.test
 phpmyadmin        PHP (composer)  root     -                           https://phpmyadmin.test →link
 ```
 
@@ -338,9 +338,9 @@ devstack doctor --json
 
 ```json
 [
-  { "name": "climaone", "type": "PHP (composer)", "docroot": "public",
-    "repo": "you/climaone-amc", "url": "https://climaone.test",
-    "path": "/Users/you/sites/climaone", "symlink": false }
+  { "name": "shop", "type": "Laravel", "docroot": "public",
+    "repo": "you/shop", "url": "https://shop.test",
+    "path": "/Users/you/sites/shop", "symlink": false }
 ]
 ```
 
