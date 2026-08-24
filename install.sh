@@ -266,6 +266,16 @@ if [[ "$WITH_MAILPIT" == "1" ]]; then
   fi
 fi
 
+# Put `devstack` on PATH. A symlink into $BREW/bin (already on PATH for any
+# Homebrew user) rather than a copy, so a git pull updates the command. The
+# script resolves its own symlink, so it still finds its siblings.
+if is_dry; then
+  dry "symlink $BREW/bin/devstack -> $SCRIPT_DIR/bin/devstack"
+else
+  ln -sfn "$SCRIPT_DIR/bin/devstack" "$BREW/bin/devstack"
+  ok "devstack on PATH ($BREW/bin/devstack)"
+fi
+
 # The dashboard is served from the repo itself, so it stays in step with the
 # CLI it reports on. A symlink means the existing wildcard vhost picks it up
 # with no extra nginx config.

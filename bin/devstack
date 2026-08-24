@@ -14,6 +14,17 @@ _env_TLD="${TLD:-}"; _env_SITES="${SITES_DIR:-}"; _env_PHP="${PHP_VERSION:-}"
 TLD="${_env_TLD:-${TLD:-test}}"
 SITES_DIR="${_env_SITES:-${SITES_DIR:-$HOME/sites}}"
 PHP_VERSION="${_env_PHP:-${PHP_VERSION:-8.3}}"
+# Resolve this script's real directory, following symlinks. install.sh links
+# devstack into $BREW/bin; without this, dirname would point there and neither
+# site-cert-regen nor the config templates would be found.
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do
+  _d="$(cd "$(dirname "$SELF")" && pwd)"
+  SELF="$(readlink "$SELF")"
+  [[ "$SELF" != /* ]] && SELF="$_d/$SELF"
+done
+BIN_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
 # Locate Homebrew without relying on PATH. php-fpm, launchd agents and cron
 # all run with a minimal or empty environment, where `brew` is not found and
 # every command here would fail on the first line.
@@ -126,7 +137,7 @@ cmd_stop() {
 }
 
 cmd_reload() {
-  "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen"
+  "$BIN_DIR/site-cert-regen"
   sudo nginx -s reload && ok "nginx reloaded"
 }
 
@@ -637,7 +648,7 @@ MDEOF
   esac
 
   info_step "certificate"
-  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$BIN_DIR/site-cert-regen" >/dev/null 2>&1 \
     && ok "certificate now covers $site.$TLD" || warn "certificate regeneration failed — run site-cert-regen"
 
   echo
@@ -785,7 +796,7 @@ cmd_rm() {
     rm -rf "$dir" && ok "removed $dir"
   fi
 
-  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$BIN_DIR/site-cert-regen" >/dev/null 2>&1 \
     && ok "certificate regenerated" || warn "certificate regeneration failed"
   warn "Reload nginx:  sudo nginx -s reload"
 }
@@ -815,7 +826,7 @@ cmd_adminer() {
   chmod 644 "$dir/index.php"
   ok "installed ($(( size / 1024 )) KB)"
 
-  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$BIN_DIR/site-cert-regen" >/dev/null 2>&1 \
     && ok "certificate now covers adminer.$TLD" || warn "run site-cert-regen"
 
   cat <<EOF
@@ -834,7 +845,7 @@ cmd_install_mailpit() {
   local plist="$HOME/Library/LaunchAgents/dev.brewdevstack.mailpit.plist"
   local ini="$BREW/etc/php/$PHP_VERSION/conf.d/zz-mailpit.ini"
   local vhost="$BREW/etc/nginx/servers/mailpit.conf"
-  local tpl; tpl="$(dirname "${BASH_SOURCE[0]}")/../config/mailpit.conf.template"
+  local tpl; tpl="$BIN_DIR/../config/mailpit.conf.template"
 
   brew list --versions mailpit >/dev/null 2>&1 || { echo "Installing mailpit…"; brew install mailpit >/dev/null; }
   ok "mailpit $(brew list --versions mailpit | awk '{print $2}')"
@@ -905,7 +916,7 @@ EOF
     ok "vhost → https://mailpit.$TLD"
   fi
 
-  SITES_DIR="$SITES_DIR" TLD="$TLD" "$(dirname "${BASH_SOURCE[0]}")/site-cert-regen" >/dev/null 2>&1 \
+  SITES_DIR="$SITES_DIR" TLD="$TLD" "$BIN_DIR/site-cert-regen" >/dev/null 2>&1 \
     && ok "certificate covers mailpit.$TLD"
   echo
   warn "Reload nginx:  sudo nginx -s reload"

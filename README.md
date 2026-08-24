@@ -52,6 +52,9 @@ See exactly what it would change first:
 ./install.sh --dry-run
 ```
 
+The installer links `devstack` into Homebrew's bin, so the command works from
+anywhere afterwards — no alias, no PATH edits.
+
 Then follow the three printed steps (they need `sudo`, so the script does not run
 them for you): trust the CA, add the resolver file, start the services.
 
@@ -67,15 +70,15 @@ WITH_MYSQL=0 WITH_PHPMYADMIN=0 ./install.sh
 One-time, so sites can be created without prompts afterwards:
 
 ```bash
-bin/devstack config     # your name, email, admin username → ~/.config/brew-dev-stack/config
+devstack config     # your name, email, admin username → ~/.config/brew-dev-stack/config
 ```
 
 Then, per site:
 
 ```bash
-bin/devstack new myblog                    # WordPress (default)
-bin/devstack new myapp --type=laravel      # Laravel
-bin/devstack new thing --type=plain        # empty PHP project
+devstack new myblog                    # WordPress (default)
+devstack new myapp --type=laravel      # Laravel
+devstack new thing --type=plain        # empty PHP project
 ```
 
 Every type gets a database and a **dedicated database user** — not root, so one site
@@ -100,7 +103,7 @@ SITES_DIR=~/code TLD=localdev ./install.sh   # recorded, not just used once
 ## Managing sites
 
 ```bash
-bin/devstack list
+devstack list
 ```
 
 ```
@@ -117,9 +120,9 @@ directory** — without that check, a symlinked site walks up the tree and repor
 whatever repo happens to contain its target.
 
 ```bash
-bin/devstack rm oldsite                    # files + database + db user
-bin/devstack rm oldsite --keep-db          # keep the data
-bin/devstack rm oldsite --keep-files       # keep the code
+devstack rm oldsite                    # files + database + db user
+devstack rm oldsite --keep-db          # keep the data
+devstack rm oldsite --keep-files       # keep the code
 ```
 
 `rm` shows exactly what it will delete, warns about uncommitted or unpushed git work,
@@ -129,7 +132,7 @@ that drops a database.
 ## Database administration
 
 ```bash
-bin/devstack install adminer
+devstack install adminer
 ```
 
 Installs [Adminer](https://www.adminer.org/) at `https://adminer.test` — a single PHP
@@ -161,7 +164,7 @@ available" — a confusing failure, because nothing errored at install time.
 ## Catching outgoing mail
 
 ```bash
-bin/devstack install mailpit
+devstack install mailpit
 ```
 
 Every WordPress and Laravel site sends mail. Without a catcher, PHP's `mail()` hands off
@@ -188,10 +191,10 @@ call, so the bind flags cannot live there.
 ## Debugging
 
 ```bash
-bin/devstack install xdebug
-bin/devstack logs php          # PHP errors
-bin/devstack logs mysite       # a site's WordPress debug.log
-bin/devstack logs all          # nginx and PHP together
+devstack install xdebug
+devstack logs php          # PHP errors
+devstack logs mysite       # a site's WordPress debug.log
+devstack logs all          # nginx and PHP together
 ```
 
 Xdebug is configured with `start_with_request = trigger`, so it stays dormant until you
@@ -208,7 +211,7 @@ New sites also get `WP_DEBUG` / `WP_DEBUG_LOG` (WordPress) and `.env` debug defa
 ## Redis
 
 ```bash
-bin/devstack install redis
+devstack install redis
 ```
 
 Installs Redis, binds it to 127.0.0.1, and builds the **phpredis** extension — Laravel
@@ -218,9 +221,9 @@ the extension. Use a different `REDIS_DB` per site to keep them apart.
 ## Laravel workers
 
 ```bash
-bin/devstack queue myapp on        # queue:work as a managed agent
-bin/devstack schedule myapp on     # schedule:run every minute
-bin/devstack queue myapp           # status
+devstack queue myapp on        # queue:work as a managed agent
+devstack schedule myapp on     # schedule:run every minute
+devstack queue myapp           # status
 ```
 
 Both run under launchd, survive logout, and log to the site's own
@@ -232,7 +235,7 @@ web requests.
 ## Public tunnels for webhooks
 
 ```bash
-bin/devstack tunnel myapp
+devstack tunnel myapp
 ```
 
 Opens a Cloudflare quick tunnel — a random `trycloudflare.com` URL, no account needed,
@@ -299,8 +302,8 @@ A live tunnel is called out with its address, read from cloudflared's own
 It is **read-only by design**.## Machine-readable output
 
 ```bash
-bin/devstack list --json
-bin/devstack doctor --json
+devstack list --json
+devstack doctor --json
 ```
 
 ```json
@@ -320,11 +323,11 @@ hand-rolled JSON gets escaping wrong the first time a site name contains a quote
 ## Daily use
 
 ```bash
-bin/devstack help       # grouped command reference
-bin/devstack status     # what is running, what is listening
-bin/devstack doctor     # diagnose why something is not working
-bin/devstack reload     # regenerate the certificate + reload nginx
-bin/devstack logs       # tail the error log
+devstack help       # grouped command reference
+devstack status     # what is running, what is listening
+devstack doctor     # diagnose why something is not working
+devstack reload     # regenerate the certificate + reload nginx
+devstack logs       # tail the error log
 ```
 
 `status` is an inventory — services, listeners, socket, site count. `doctor` is a
@@ -334,10 +337,10 @@ CA trust, certificate shape, php-fpm log ownership) and tells you what to do abo
 ### PHP versions, globally or per site
 
 ```bash
-bin/devstack php                      # what is in use, and any overrides
-bin/devstack php 8.4                  # change the default for every site
-bin/devstack php 8.2 --site=legacy    # pin one site
-bin/devstack php --site=legacy        # back to the default
+devstack php                      # what is in use, and any overrides
+devstack php 8.4                  # change the default for every site
+devstack php 8.2 --site=legacy    # pin one site
+devstack php --site=legacy        # back to the default
 ```
 
 Each installed version runs its own php-fpm pool on its own socket, and nginx picks
@@ -352,9 +355,9 @@ Xdebug is built per version, so re-run `install xdebug` after switching.
 ### MySQL performance_schema
 
 ```bash
-bin/devstack mysql perf         # show configured + running state and current memory
-bin/devstack mysql perf off     # ~200 MB back
-bin/devstack mysql perf on      # when you need query analysis
+devstack mysql perf         # show configured + running state and current memory
+devstack mysql perf off     # ~200 MB back
+devstack mysql perf on      # when you need query analysis
 ```
 
 Toggling restarts MySQL and waits for the socket to actually accept connections —
@@ -363,7 +366,7 @@ Toggling restarts MySQL and waits for the socket to actually accept connections 
 With it off, `performance_schema.*` and `information_schema.global_variables` are
 unavailable; use `SHOW VARIABLES` and `SHOW STATUS` instead.
 
-After creating a new project directory, run `bin/devstack reload` so the certificate
+After creating a new project directory, run `devstack reload` so the certificate
 covers the new hostname.
 
 ## Design decisions
@@ -407,7 +410,7 @@ you actually need query analysis — the file documents how.
 
 ## Troubleshooting
 
-`bin/devstack doctor` checks all of the below. See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+`devstack doctor` checks all of the below. See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 for the full list, including migrating away from Valet or Herd.
 
 ## Requirements

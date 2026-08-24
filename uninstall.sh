@@ -23,6 +23,7 @@ brew services stop "php@$PHP_VERSION" 2>/dev/null || true
 sudo brew services stop nginx 2>/dev/null || true
 sudo brew services stop dnsmasq 2>/dev/null || true
 
+rm -f "$BREW/bin/devstack"
 rm -f "$BREW/etc/nginx/servers/local-dev.conf"
 rm -f "$BREW/etc/dnsmasq.d/${TLD}-tld.conf"
 rm -f "$BREW/etc/nginx/certs/local-${TLD}.pem" "$BREW/etc/nginx/certs/local-${TLD}-key.pem"
