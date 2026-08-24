@@ -92,6 +92,58 @@ jobs:
           printf 'plain-site\n' | bin/devstack rm plain-site
           bin/devstack list | grep -q 'plain-site' && { echo "FAIL: still listed"; exit 1; } || echo "ok: removed"
 
+      - name: PostgreSQL-backed site, end to end
+        run: |
+          bin/devstack install postgres
+          bin/devstack new pg-site --type=plain --db=pgsql
+          psql -h 127.0.0.1 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='dev_pg_site'" | grep -q 1 \
+            && echo "ok: database in postgres" || { echo "FAIL: no pg database"; exit 1; }
+          bin/devstack creds pg-site | grep -q 'pgsql' && echo "ok: creds report pgsql"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -H "Host: pg-site.$TLD" http://127.0.0.1/)
+          [ "$code" = "200" ] && echo "ok: serves ($code)" || { echo "FAIL: $code"; exit 1; }
+          printf 'pg-site\n' | bin/devstack rm pg-site
+          psql -h 127.0.0.1 -d postgres -tAc "SELECT count(*) FROM pg_database WHERE datname='dev_pg_site'" | grep -q '^0$' \
+            && echo "ok: rm dropped the pg database" || { echo "FAIL: pg database survived rm"; exit 1; }
+
+      - name: MCP server smoke test
+        run: |
+          { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"stack_status","arguments":{}}}'
+          } | bin/devstack-mcp > /tmp/mcp.jsonl
+          python3 - <<'PYEOF'
+          import json
+          lines = [json.loads(l) for l in open('/tmp/mcp.jsonl')]
+          by_id = {d['id']: d for d in lines}
+          assert by_id[1]['result']['serverInfo']['name'] == 'devstack'
+          tools = [t['name'] for t in by_id[2]['result']['tools']]
+          assert len(tools) == 8, tools
+          assert 'delete_site' not in tools and 'rm' not in tools, "destructive tool exposed!"
+          sites = json.loads(by_id[3]['result']['content'][0]['text'])
+          assert any(s['name'] == 'wp-site' for s in sites), sites
+          checks = json.loads(by_id[4]['result']['content'][0]['text'])
+          assert all(c['status'] in ('pass','warn','fail') for c in checks)
+          print(f"ok: MCP — {len(tools)} tools, {len(sites)} sites, {len(checks)} checks, no destructive tools")
+          PYEOF
+
+      - name: Uninstall must reverse everything
+        run: |
+          printf 'y\n' | ./uninstall.sh
+          fail=0
+          for f in "$(brew --prefix)/bin/devstack" \
+                   "$(brew --prefix)/etc/nginx/servers/local-dev.conf" \
+                   "$(brew --prefix)/etc/nginx/php-versions.map" \
+                   "/etc/resolver/$TLD"; do
+            [ -e "$f" ] && { echo "FAIL: left behind: $f"; fail=1; }
+          done
+          grep -rl 'mailpit sendmail' "$(brew --prefix)"/etc/php/*/conf.d/ 2>/dev/null \
+            && { echo "FAIL: mail still routed to a removed mailpit"; fail=1; }
+          grep -q '/usr/bin/true' "$(brew --prefix)"/etc/php/*/conf.d/zz-mailpit.ini \
+            && echo "ok: mail() discards rather than delivering after uninstall"
+          [ "$fail" = 0 ] && echo "ok: uninstall left nothing behind"
+          exit $fail
+
       - name: Diagnostics on failure
         if: failure()
         run: |
