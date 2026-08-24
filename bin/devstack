@@ -1434,7 +1434,10 @@ cmd_creds() {
 # --- postgres --------------------------------------------------------------
 cmd_install_postgres() {
   local formula
-  formula="$(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$' | sort -V | tail -1)"
+  # `|| true`: no postgres installed is the normal first-run case, and a
+  # failing command substitution aborts under set -e — the same class that has
+  # now bitten this codebase four times.
+  formula="$(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$' | sort -V | tail -1 || true)"
   if [[ -z "$formula" ]]; then
     # 18 rather than an older major: pgvector's bottle only builds against
     # recent majors, and installing an old postgres walks straight into that.
@@ -1460,7 +1463,7 @@ cmd_install_postgres() {
 
 cmd_install_pgvector() {
   local formula major
-  formula="$(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$' | sort -V | tail -1)"
+  formula="$(brew list --formula 2>/dev/null | grep -E '^postgresql(@[0-9]+)?$' | sort -V | tail -1 || true)"
   [[ -n "$formula" ]] || { bad "No PostgreSQL installed. First:  devstack install postgres"; return 1; }
   major="$(psql -h 127.0.0.1 -d postgres -tAc "SHOW server_version" 2>/dev/null | cut -d. -f1)"
   if [[ -n "$major" && "$major" -lt 17 ]]; then
