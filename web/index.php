@@ -9,7 +9,6 @@
 declare(strict_types=1);
 
 const CACHE_TTL = 15;
-const RECENT    = 6;
 
 /** Sites that are this stack's own tooling, not your projects. */
 const STACK_SITES = ['devstack', 'adminer', 'phpmyadmin', 'mailpit'];
@@ -132,7 +131,7 @@ function site_health(array $sites): array
 function health_label(int $code): array
 {
     return match (true) {
-        $code === 0                     => ['down', 'no response'],
+        $code === 0                     => ['down', 'down'],
         $code >= 200 && $code < 400     => ['ok',   (string) $code],
         // Deliberately protected, not broken — do not raise these as faults.
         $code === 401 || $code === 403  => ['prot', (string) $code],
@@ -154,39 +153,6 @@ function php_versions(string $brew): array
     return $out;
 }
 
-/** Recent PHP errors, newest first. */
-function recent_errors(string $brew, int $limit = 5): array
-{
-    $f = "$brew/var/log/php-error.log";
-    if (!is_file($f)) return ['count' => 0, 'lines' => []];
-    // Read only the tail; these logs grow without bound.
-    $fh = fopen($f, 'r');
-    if (!$fh) return ['count' => 0, 'lines' => []];
-    fseek($fh, max(0, filesize($f) - 65536));
-    $tail = (string) stream_get_contents($fh);
-    fclose($fh);
-
-    $cut = time() - 86400;
-    $found = []; $seen = [];
-    foreach (array_reverse(explode("\n", $tail)) as $line) {
-        if (!preg_match('~^\[(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}:\d{2})[^]]*\]\s*(.*)$~', $line, $m)) continue;
-        $ts = strtotime(str_replace('-', ' ', $m[1]));
-        if ($ts === false || $ts < $cut) continue;
-        // A PHP error spans several lines — the message, then "PHP Stack trace:"
-        // and numbered frames. Counting every line turns two warnings into five.
-        if (!preg_match('~^PHP (Warning|Fatal error|Parse error|Notice|Deprecated|Recoverable error):~', $m[2])) continue;
-        if (stripos($m[2], 'probe') !== false) continue;      // our own health probes
-        // The same warning repeated hundreds of times is one thing to fix.
-        $key = preg_replace('~\d+~', 'N', mb_strimwidth($m[2], 0, 120));
-        if (isset($seen[$key])) { $seen[$key]++; continue; }
-        $seen[$key] = 1;
-        $found[] = ['at' => $ts, 'msg' => $m[2], 'key' => $key];
-        if (count($found) >= $limit) break;
-    }
-    foreach ($found as &$f) { $f['times'] = $seen[$f['key']] ?? 1; }
-    return ['count' => count($found), 'lines' => $found];
-}
-
 /** How many messages Mailpit is holding. */
 function mail_count(): ?int
 {
@@ -206,6 +172,55 @@ function workers(): array
     foreach (explode("\n", (string) shell_exec("launchctl list 2>/dev/null")) as $line) {
         if (preg_match('~dev\.brewdevstack\.(\S+)\.(queue|schedule)$~', $line, $m)) {
             $out[$m[1]][] = $m[2];
+        }
+    }
+    return $out;
+}
+
+/** Which stack services are installed, and whether each is running. */
+function services(string $brew): array
+{
+    // name, formula dir, pgrep pattern (bracketed so the sh -c running it
+    // does not match its own argv), ports
+    $defs = [
+        ['nginx',      'nginx',      '[n]ginx: master',    '80 · 443'],
+        ['php-fpm',    'php',        '[p]hp-fpm: master',  'unix sockets'],
+        ['dnsmasq',    'dnsmasq',    '[d]nsmasq',          '53'],
+        ['MySQL',      'mysql',      '[m]ysqld',           '3306'],
+        ['PostgreSQL', 'postgresql', '[p]ostgres -D',      '5432'],
+        ['Redis',      'redis',      '[r]edis-server',     '6379'],
+        ['Mailpit',    'mailpit',    '[m]ailpit',          '1025 · 8025'],
+    ];
+    $out = [];
+    foreach ($defs as [$name, $formula, $pat, $port]) {
+        $installed = is_dir("$brew/opt/$formula") || glob("$brew/opt/$formula@*");
+        if (!$installed) continue;
+        $running = trim(shell_exec("pgrep -f " . escapeshellarg($pat) . " 2>/dev/null") ?: '') !== '';
+        $out[] = ['name' => $name, 'running' => $running, 'port' => $port];
+    }
+    return $out;
+}
+
+/** PHP errors in the last 24h, counted per site from the paths in the log. */
+function site_errors(string $brew): array
+{
+    $f = "$brew/var/log/php-error.log";
+    if (!is_file($f)) return [];
+    $fh = fopen($f, 'r');
+    if (!$fh) return [];
+    fseek($fh, max(0, filesize($f) - 65536));
+    $tail = (string) stream_get_contents($fh);
+    fclose($fh);
+
+    $cut = time() - 86400;
+    $out = [];
+    foreach (explode("\n", $tail) as $line) {
+        if (!preg_match('~^\[(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}:\d{2})[^\]]*\]\s*(.*)$~', $line, $m)) continue;
+        if (!preg_match('~^PHP (Warning|Fatal error|Parse error|Recoverable error):~', $m[2])) continue;
+        $ts = strtotime(str_replace('-', ' ', $m[1]));
+        if ($ts === false || $ts < $cut) continue;
+        if (preg_match('~/sites/([^/\s]+)/~', $m[2], $sm)) {
+            $out[$sm[1]] = ($out[$sm[1]] ?? 0) + 1;
         }
     }
     return $out;
@@ -241,7 +256,8 @@ $problems = array_values(array_filter($checks, fn($c) => $c['status'] !== 'pass'
 
 $health   = site_health($sites);
 $phpvers  = php_versions($BREW);
-$errors   = recent_errors($BREW);
+$services = services($BREW);
+$siteErrs = site_errors($BREW);
 $mail     = mail_count();
 $wk       = workers();
 // A fault is no response or a server error. 401/403 are protection and 404
@@ -356,10 +372,17 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 .note:last-child{border-bottom:0}
 .note b{color:var(--fg);font-weight:600;display:block;margin-bottom:2px}
 .note code,.alert code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--code);padding:1px 5px;border-radius:4px;white-space:nowrap}
-.hd{width:7px;height:7px;border-radius:50%;flex:none;background:var(--faint)}
-.hd.ok{background:var(--ok)}.hd.warn{background:var(--warn)}
-.hd.bad,.hd.down{background:var(--fail)}
-.hd.prot{background:var(--faint)}
+.brand{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:14px}
+.brand b{color:var(--accent);font-weight:700}
+.st{font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:1px 7px;border-radius:20px;flex:none;
+  border:1px solid var(--line);color:var(--dim)}
+.st.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.st.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
+.st.bad,.st.down{color:var(--fail);border-color:color-mix(in srgb,var(--fail) 40%,var(--line))}
+.st.prot{color:var(--dim)}
+.foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px}
+.foot a{color:var(--dim);text-decoration:none}
+.foot a:hover{color:var(--accent)}
 .pill{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:0 7px;flex:none}
 .alert .err{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);
   margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -370,6 +393,8 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
 </head>
 <body>
 <div class="wrap">
+
+  <div class="brand">Homebrew <b>DevStack</b></div>
 
   <h1 class="hi"><?= $greet ?><?= $name ? ', ' . e($name) : '' ?></h1>
   <?php if (!$problems): ?>
@@ -382,7 +407,7 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" data-p="overview" aria-selected="true">Overview</button>
     <button class="tab" role="tab" data-p="sites" aria-selected="false">Sites<span class="n"><?= count($sites) ?></span></button>
-    <button class="tab" role="tab" data-p="commands" aria-selected="false">Commands</button>
+    <button class="tab" role="tab" data-p="commands" aria-selected="false">CLI commands</button>
     <button class="tab" role="tab" data-p="reference" aria-selected="false">Reference</button>
   </div>
 
@@ -402,16 +427,6 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
       </div>
     <?php endif; ?>
 
-    <?php if ($errors['count']): ?>
-      <div class="alert warn">
-        <b><?= $errors['count'] ?> PHP error<?= $errors['count'] === 1 ? '' : 's' ?> in the last 24 hours</b>
-        <?php foreach (array_slice($errors['lines'], 0, 3) as $l): ?>
-          <span class="err"><?= e(mb_strimwidth($l['msg'], 0, 140, '…')) ?><?= ($l['times'] ?? 1) > 1 ? ' ×' . $l['times'] : '' ?></span>
-        <?php endforeach; ?>
-        <span style="margin-top:4px"><code>devstack logs php</code> for the rest.</span>
-      </div>
-    <?php endif; ?>
-
     <?php if ($tunnel !== null): ?>
       <div class="alert warn">
         <b>A public tunnel is open<?= $tunnel['site'] ? ' — ' . e($tunnel['site']) : '' ?></b>
@@ -426,16 +441,14 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
       <?php endforeach; ?>
     </div>
 
-    <h3 class="sub">Recently worked on</h3>
+    <h3 class="sub">Services</h3>
     <div class="card" style="margin-top:0">
-      <?php foreach (array_slice($sites, 0, RECENT) as $s):
-        [$cls, $lbl] = health_label($health[$s['name']] ?? 0); ?>
-        <a class="row" href="<?= e($s['url']) ?>">
-          <span class="hd <?= $cls ?>" title="HTTP <?= e($lbl) ?>"></span>
-          <span class="nm"><?= e($s['name']) ?></span>
-          <span class="ty"><?= e($s['type']) ?></span>
-          <span class="tm"><?= ago((int) $s['modified']) ?></span>
-        </a>
+      <?php foreach ($services as $svc): ?>
+        <div class="row">
+          <span class="nm"><?= e($svc['name']) ?></span>
+          <span class="ty"><?= e($svc['port']) ?></span>
+          <span class="st <?= $svc['running'] ? 'ok' : 'bad' ?>"><?= $svc['running'] ? 'running' : 'stopped' ?></span>
+        </div>
       <?php endforeach; ?>
     </div>
   </section>
@@ -447,8 +460,11 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
         [$cls, $lbl] = health_label($health[$s['name']] ?? 0);
         $pv = $phpvers[$s['name']] ?? null; ?>
         <a class="row" href="<?= e($s['url']) ?>">
-          <span class="hd <?= $cls ?>" title="HTTP <?= e($lbl) ?>"></span>
+          <span class="st <?= $cls ?>"><?= e($lbl) ?></span>
           <span class="nm"><?= e($s['name']) ?></span>
+          <?php if (!empty($siteErrs[$s['name']])): ?>
+            <span class="st bad"><?= $siteErrs[$s['name']] ?> error<?= $siteErrs[$s['name']] === 1 ? '' : 's' ?></span>
+          <?php endif; ?>
           <?php if ($pv): ?><span class="pill">php <?= e($pv) ?></span><?php endif; ?>
           <?php foreach ($wk[$s['name']] ?? [] as $w): ?><span class="pill"><?= e($w) ?></span><?php endforeach; ?>
           <span class="ty"><?= e($s['type']) ?></span>
@@ -459,6 +475,22 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
   </section>
 
   <section class="pane" id="commands">
+    <div class="alert" style="margin-bottom:12px">
+      <b>This page is read-only</b>
+      <span>Creating, changing and removing anything happens in the terminal — a page any
+      browser can reach must not be able to delete a site. These are the commands.</span>
+    </div>
+
+    <h3 class="sub">Current defaults</h3>
+    <div class="card" style="margin-top:0;margin-bottom:16px">
+      <div class="cmd" style="padding-top:10px"><code>SITES_DIR</code><span><?= e(config_value('SITES_DIR') ?: (getenv('HOME') . '/sites')) ?></span></div>
+      <div class="cmd"><code>TLD</code><span>.<?= e($tld) ?></span></div>
+      <div class="cmd"><code>PHP</code><span><?= e($phpvers['default'] ?? '8.3') ?> (per-site pins override)</span></div>
+      <div class="cmd"><code>--type</code><span>wordpress, when not given to <code>new</code></span></div>
+      <div class="cmd" style="padding-bottom:10px"><code>config</code><span>~/.config/brew-dev-stack/config — environment variables override</span></div>
+    </div>
+
+    <h3 class="sub">Commands</h3>
     <div class="card" style="margin-top:0">
       <?php foreach ($groups as $g => $cmds): ?>
         <div class="grp"><h4><?= e($g) ?></h4>
@@ -486,6 +518,12 @@ table.arch td:last-child{color:var(--faint);font-family:ui-monospace,Menlo,monos
       <?php endforeach; ?>
     </div>
   </section>
+
+  <div class="foot">
+    Made with <span title="Homebrew">🍺</span> on macOS ·
+    <a href="https://github.com/deshabhishek007/brew-dev-stack">GitHub</a> ·
+    feature ideas &amp; feedback → <a href="https://x.com/fitehal">@fitehal</a>
+  </div>
 </div>
 
 <script>

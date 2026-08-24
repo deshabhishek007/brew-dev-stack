@@ -274,9 +274,9 @@ Four tabs, each a single screen:
 
 | | |
 |---|---|
-| **Overview** | sites that are down, recent PHP errors, a live tunnel with its public URL, the tools, and what you worked on recently |
-| **Sites** | all of them, searchable, each with a health dot, its PHP version when pinned, and any running workers |
-| **Commands** | the full reference, parsed from `devstack help` so it cannot drift from the CLI |
+| **Overview** | anything down, a live tunnel with its public URL, the tools, and every service with its port and running state |
+| **Sites** | all of them, searchable — each with its HTTP status code as a visible badge, a per-site count of recent PHP errors, its PHP version when pinned, and any running workers |
+| **CLI commands** | why the page is read-only, the current default values (sites dir, TLD, PHP version), and the full reference parsed from `devstack help` so it cannot drift from the CLI |
 | **Reference** | each layer, its package and config path, and the reasoning behind the non-obvious decisions |
 
 Your own projects only — `devstack`, `adminer` and `phpmyadmin` are this stack's tooling
@@ -288,9 +288,9 @@ identical to a healthy one. **401 and 403 are treated as protected rather than b
 and 404 at a root is often deliberate for an API — only a server error or no response at
 all raises an alarm.
 
-Recent PHP errors are summarised from the log. A single PHP error spans several lines —
-the message, then a stack trace — so only the message lines are counted, and repeats of
-the same error collapse into one with a count. Otherwise two warnings look like five.
+PHP errors from the last day are attributed to the site whose path appears in them and
+shown as a count on that site's row — an error belongs next to the thing that produced
+it, not in a global feed.
 
 A live tunnel is called out with its address, read from cloudflared's own
 `/quicktunnel` endpoint, so it works for a tunnel that was already running.
