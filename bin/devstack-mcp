@@ -1,0 +1,252 @@
+#!/usr/bin/env php
+<?php
+/**
+ * devstack-mcp — an MCP server over the devstack CLI, so coding agents can
+ * inspect and use the local stack: sites, health, logs, captured mail,
+ * credentials, and site creation.
+ *
+ * stdio transport, JSON-RPC 2.0, no dependencies — PHP is already the core of
+ * this stack, and the protocol is fgets/json_decode/fwrite.
+ *
+ * Deliberately absent: delete_site, rm, tunnel. MCP clients confirm tool
+ * calls, but an agent acting on an injected instruction from a README or a
+ * webpage must not be able to drop a database or expose a site publicly.
+ * Destructive and outward-facing operations stay in the human's terminal.
+ */
+declare(strict_types=1);
+
+const VERSION = '0.1.0';
+
+$BIN  = __DIR__ . '/devstack';
+$HOME = getenv('HOME') ?: ($_SERVER['HOME'] ?? '/tmp');
+
+// GUI-launched agents inherit a minimal environment; brew may not be on PATH.
+$BREW = '/opt/homebrew';
+foreach (['/opt/homebrew', '/usr/local'] as $c) {
+    if (is_executable("$c/bin/brew")) { $BREW = $c; break; }
+}
+putenv("PATH=$BREW/bin:$BREW/sbin:/usr/bin:/bin:/usr/sbin:/sbin:" . (getenv('PATH') ?: ''));
+
+function config_value(string $key): string
+{
+    global $HOME;
+    $f = "$HOME/.config/brew-dev-stack/config";
+    if (!is_file($f)) return '';
+    foreach (file($f) as $line) {
+        if (preg_match('/^' . preg_quote($key, '/') . '="?([^"\n]*)"?/', $line, $m)) return $m[1];
+    }
+    return '';
+}
+
+function run(string $args): array
+{
+    global $BIN;
+    exec(escapeshellarg($BIN) . " $args 2>&1", $out, $code);
+    return [implode("\n", $out), $code];
+}
+
+function http_get(string $url, int $timeout = 3): ?string
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => $timeout]);
+    $body = curl_exec($ch);
+    curl_close($ch);
+    return $body === false ? null : (string) $body;
+}
+
+function log_tail(string $file, int $lines): string
+{
+    if (!is_file($file)) return "(no log at $file)";
+    $fh = fopen($file, 'r');
+    fseek($fh, max(0, filesize($file) - 131072));
+    $tail = (string) stream_get_contents($fh);
+    fclose($fh);
+    $rows = array_values(array_filter(explode("\n", $tail), fn($l) => trim($l) !== ''));
+    return implode("\n", array_slice($rows, -$lines));
+}
+
+// ---------------------------------------------------------------------------
+
+$TOOLS = [
+    'stack_status' => [
+        'description' => 'Health of the local dev stack: every doctor check with pass/warn/fail. Run this first when something seems wrong.',
+        'schema' => ['type' => 'object', 'properties' => new stdClass(), 'required' => []],
+        'fn' => function (array $a): string {
+            [$out] = run('doctor --json');
+            return $out;
+        },
+    ],
+    'list_sites' => [
+        'description' => 'Every local site: name, type (WordPress/Laravel/PHP/static), docroot, git repo, URL, path, last-modified epoch.',
+        'schema' => ['type' => 'object', 'properties' => new stdClass(), 'required' => []],
+        'fn' => function (array $a): string {
+            [$out] = run('list --json');
+            return $out;
+        },
+    ],
+    'check_site' => [
+        'description' => 'HTTP status of one site, requested through the local nginx. Use to verify a site actually serves after changing it.',
+        'schema' => ['type' => 'object',
+            'properties' => ['site' => ['type' => 'string', 'description' => 'site name, e.g. "blog"']],
+            'required' => ['site']],
+        'fn' => function (array $a): string {
+            $site = $a['site'] ?? '';
+            if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9-]*$/', $site)) return 'invalid site name';
+            $tld = config_value('TLD') ?: 'test';
+            $ch = curl_init('http://127.0.0.1/');
+            curl_setopt_array($ch, [CURLOPT_HTTPHEADER => ["Host: $site.$tld"], CURLOPT_NOBODY => true,
+                CURLOPT_TIMEOUT => 6, CURLOPT_RETURNTRANSFER => true]);
+            curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            return json_encode(['site' => $site, 'http_status' => $code ?: null,
+                'note' => $code === 0 ? 'no response — php-fpm may be failing; try read_log php' : null]);
+        },
+    ],
+    'read_log' => [
+        'description' => 'Tail of a stack log. Sources: php (PHP errors), nginx (nginx errors), access (nginx access), fpm (php-fpm). Newest lines last.',
+        'schema' => ['type' => 'object',
+            'properties' => [
+                'source' => ['type' => 'string', 'enum' => ['php', 'nginx', 'access', 'fpm']],
+                'lines'  => ['type' => 'integer', 'description' => 'default 60, max 300'],
+            ],
+            'required' => ['source']],
+        'fn' => function (array $a): string {
+            global $BREW;
+            $tld = config_value('TLD') ?: 'test';
+            $php = config_value('PHP_VERSION') ?: '8.3';
+            $map = [
+                'php'    => "$BREW/var/log/php-error.log",
+                'nginx'  => "$BREW/var/log/nginx/$tld-error.log",
+                'access' => "$BREW/var/log/nginx/$tld-access.log",
+                'fpm'    => "$BREW/var/log/php-fpm-$php.log",
+            ];
+            $src = $a['source'] ?? '';
+            if (!isset($map[$src])) return 'unknown source';
+            return log_tail($map[$src], min(300, max(1, (int) ($a['lines'] ?? 60))));
+        },
+    ],
+    'list_mail' => [
+        'description' => 'Messages captured by Mailpit — everything local sites have sent. Returns id, subject, from, to, created. Use read_mail for a body.',
+        'schema' => ['type' => 'object',
+            'properties' => ['limit' => ['type' => 'integer', 'description' => 'default 10']],
+            'required' => []],
+        'fn' => function (array $a): string {
+            $n = min(50, max(1, (int) ($a['limit'] ?? 10)));
+            $body = http_get("http://127.0.0.1:8025/api/v1/messages?limit=$n");
+            if ($body === null) return 'Mailpit is not responding on 127.0.0.1:8025';
+            $d = json_decode($body, true);
+            $rows = array_map(fn($m) => [
+                'id' => $m['ID'], 'subject' => $m['Subject'],
+                'from' => $m['From']['Address'] ?? '',
+                'to' => array_map(fn($t) => $t['Address'], $m['To'] ?? []),
+                'created' => $m['Created'],
+            ], $d['messages'] ?? []);
+            return json_encode(['total' => $d['total'] ?? 0, 'messages' => $rows], JSON_PRETTY_PRINT);
+        },
+    ],
+    'read_mail' => [
+        'description' => 'Full text of one captured message by id (from list_mail). Lets you verify a password-reset or order email a site just sent.',
+        'schema' => ['type' => 'object',
+            'properties' => ['id' => ['type' => 'string']],
+            'required' => ['id']],
+        'fn' => function (array $a): string {
+            $id = preg_replace('/[^A-Za-z0-9-]/', '', $a['id'] ?? '');
+            $body = http_get("http://127.0.0.1:8025/api/v1/message/$id");
+            if ($body === null) return 'Mailpit is not responding';
+            $d = json_decode($body, true);
+            if (!$d) return "no message with id $id";
+            return json_encode(['subject' => $d['Subject'] ?? '', 'from' => $d['From']['Address'] ?? '',
+                'text' => $d['Text'] ?? '', 'html_present' => !empty($d['HTML'])], JSON_PRETTY_PRINT);
+        },
+    ],
+    'site_credentials' => [
+        'description' => 'Database credentials for a site (host, database, user, password, engine) as devstack creds reports them.',
+        'schema' => ['type' => 'object',
+            'properties' => ['site' => ['type' => 'string']],
+            'required' => ['site']],
+        'fn' => function (array $a): string {
+            $site = $a['site'] ?? '';
+            if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$/', $site)) return 'invalid site name';
+            [$out] = run('creds ' . escapeshellarg($site));
+            return $out;
+        },
+    ],
+    'create_site' => [
+        'description' => 'Create a new local site: database, scaffolding, certificate. Types: wordpress (default), laravel, plain. db: mysql (default) or pgsql (not for wordpress). Requires a reload afterwards for HTTPS; HTTP serves immediately.',
+        'schema' => ['type' => 'object',
+            'properties' => [
+                'name' => ['type' => 'string', 'description' => 'lowercase letters, digits, hyphens'],
+                'type' => ['type' => 'string', 'enum' => ['wordpress', 'laravel', 'plain']],
+                'db'   => ['type' => 'string', 'enum' => ['mysql', 'pgsql']],
+            ],
+            'required' => ['name']],
+        'fn' => function (array $a): string {
+            $name = $a['name'] ?? '';
+            if (!preg_match('/^[a-z0-9][a-z0-9-]*$/', $name)) return 'invalid name: lowercase letters, digits, hyphens';
+            $args = 'new ' . escapeshellarg($name);
+            if (!empty($a['type']) && in_array($a['type'], ['wordpress', 'laravel', 'plain'], true)) $args .= ' --type=' . $a['type'];
+            if (!empty($a['db'])   && in_array($a['db'],   ['mysql', 'pgsql'], true))               $args .= ' --db=' . $a['db'];
+            [$out, $code] = run($args);
+            return $code === 0 ? $out : "FAILED (exit $code)\n$out";
+        },
+    ],
+];
+
+// --------------------------- JSON-RPC loop --------------------------------
+
+function reply(array $msg): void
+{
+    fwrite(STDOUT, json_encode($msg, JSON_UNESCAPED_SLASHES) . "\n");
+    fflush(STDOUT);
+}
+
+while (($line = fgets(STDIN)) !== false) {
+    $line = trim($line);
+    if ($line === '') continue;
+    $req = json_decode($line, true);
+    if (!is_array($req)) continue;
+    $id = $req['id'] ?? null;
+    $method = $req['method'] ?? '';
+
+    if ($method === 'initialize') {
+        reply(['jsonrpc' => '2.0', 'id' => $id, 'result' => [
+            'protocolVersion' => $req['params']['protocolVersion'] ?? '2025-06-18',
+            'capabilities' => ['tools' => new stdClass()],
+            'serverInfo' => ['name' => 'devstack', 'version' => VERSION],
+        ]]);
+    } elseif ($method === 'tools/list') {
+        global $TOOLS;
+        $defs = [];
+        foreach ($TOOLS as $name => $t) {
+            $defs[] = ['name' => $name, 'description' => $t['description'], 'inputSchema' => $t['schema']];
+        }
+        reply(['jsonrpc' => '2.0', 'id' => $id, 'result' => ['tools' => $defs]]);
+    } elseif ($method === 'tools/call') {
+        global $TOOLS;
+        $name = $req['params']['name'] ?? '';
+        $args = $req['params']['arguments'] ?? [];
+        if (!isset($TOOLS[$name])) {
+            reply(['jsonrpc' => '2.0', 'id' => $id,
+                'error' => ['code' => -32602, 'message' => "unknown tool: $name"]]);
+            continue;
+        }
+        try {
+            $text = ($TOOLS[$name]['fn'])(is_array($args) ? $args : []);
+            reply(['jsonrpc' => '2.0', 'id' => $id, 'result' => [
+                'content' => [['type' => 'text', 'text' => $text]],
+            ]]);
+        } catch (Throwable $e) {
+            reply(['jsonrpc' => '2.0', 'id' => $id, 'result' => [
+                'content' => [['type' => 'text', 'text' => 'tool error: ' . $e->getMessage()]],
+                'isError' => true,
+            ]]);
+        }
+    } elseif ($method === 'ping') {
+        reply(['jsonrpc' => '2.0', 'id' => $id, 'result' => new stdClass()]);
+    } elseif ($id !== null) {
+        reply(['jsonrpc' => '2.0', 'id' => $id,
+            'error' => ['code' => -32601, 'message' => "method not found: $method"]]);
+    }
+    // notifications (no id) other than the above are ignored, per spec
+}

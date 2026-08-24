@@ -343,7 +343,32 @@ it, not in a global feed.
 A live tunnel is called out with its address, read from cloudflared's own
 `/quicktunnel` endpoint, so it works for a tunnel that was already running.
 
-It is **read-only by design**.## Machine-readable output
+It is **read-only by design**.## MCP: let your coding agent use the stack
+
+```bash
+claude mcp add -s user devstack ~/brew-dev-stack/bin/devstack-mcp
+```
+
+`bin/devstack-mcp` is an MCP server — a single dependency-free PHP script speaking
+JSON-RPC over stdio, a thin layer over the same `--json` output everything else uses.
+An agent debugging your app can check the stack, read the logs, verify the site
+serves, and **read the email the app just sent**:
+
+| Tool | |
+|---|---|
+| `stack_status` | every doctor check, pass/warn/fail |
+| `list_sites` / `check_site` | what exists · does it actually serve (HTTP status) |
+| `read_log` | tail of the PHP, nginx, access or php-fpm log |
+| `list_mail` / `read_mail` | captured messages — verify the password-reset your code just triggered |
+| `site_credentials` | the database credentials, so the agent can wire an app |
+| `create_site` | new WordPress/Laravel/plain site (your MCP client confirms the call) |
+
+**Deliberately absent: `delete_site`, `rm`, `tunnel`.** MCP clients confirm tool calls,
+but an agent acting on an injected instruction from a README or webpage must not be
+able to drop a database or expose a site to the internet. Destructive and
+outward-facing operations stay in the human's terminal.
+
+## Machine-readable output
 
 ```bash
 devstack list --json
