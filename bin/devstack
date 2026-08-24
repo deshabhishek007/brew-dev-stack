@@ -58,6 +58,7 @@ Sites
   new <name> [--type=wordpress|laravel|plain]  create site, database, certificate
   list [--json]                                all sites: type, repo, URL
   rm <name> [--keep-db] [--keep-files]         delete site and database
+  creds <name>                                 show a site's database credentials
   tunnel <name>                                expose a site publicly for webhook testing
   queue <name> [on|off]                        Laravel queue:work as a managed worker
   schedule <name> [on|off]                     Laravel schedule:run every minute
@@ -1312,6 +1313,52 @@ json_object() {  # json_object key value key value …
   ' -- "$@"
 }
 
+# --- credentials -----------------------------------------------------------
+cmd_creds() {
+  local site="${1:-}"
+  [[ -n "$site" ]] || { bad "Usage: devstack creds <sitename>"; exit 1; }
+  local dir="$SITES_DIR/$site"
+  [[ -d "$dir" ]] || { bad "No such site: $site"; exit 1; }
+
+  local db="" dbuser="" dbpass="" dbhost="127.0.0.1" src=""
+  if [[ -f "$dir/wp-config.php" ]]; then
+    src="wp-config.php"
+    db="$(sed -nE "s/.*define\( *'DB_NAME', *'([^']*)'.*/\1/p"     "$dir/wp-config.php" | head -1)"
+    dbuser="$(sed -nE "s/.*define\( *'DB_USER', *'([^']*)'.*/\1/p" "$dir/wp-config.php" | head -1)"
+    dbpass="$(sed -nE "s/.*define\( *'DB_PASSWORD', *'([^']*)'.*/\1/p" "$dir/wp-config.php" | head -1)"
+    dbhost="$(sed -nE "s/.*define\( *'DB_HOST', *'([^']*)'.*/\1/p" "$dir/wp-config.php" | head -1)"
+  elif [[ -f "$dir/.env" ]]; then
+    src=".env"
+    db="$(sed -nE 's/^DB_DATABASE=(.*)$/\1/p' "$dir/.env" | head -1)"
+    dbuser="$(sed -nE 's/^DB_USERNAME=(.*)$/\1/p' "$dir/.env" | head -1)"
+    dbpass="$(sed -nE 's/^DB_PASSWORD=(.*)$/\1/p' "$dir/.env" | head -1)"
+    dbhost="$(sed -nE 's/^DB_HOST=(.*)$/\1/p' "$dir/.env" | head -1)"
+  elif [[ -f "$dir/README.md" ]] && grep -q '^    DB_DATABASE=' "$dir/README.md"; then
+    src="README.md (plain site)"
+    db="$(sed -nE 's/^ *DB_DATABASE=(.*)$/\1/p'  "$dir/README.md" | head -1)"
+    dbuser="$(sed -nE 's/^ *DB_USERNAME=(.*)$/\1/p' "$dir/README.md" | head -1)"
+    dbpass="$(sed -nE 's/^ *DB_PASSWORD=(.*)$/\1/p' "$dir/README.md" | head -1)"
+  else
+    bad "No credentials found — looked for wp-config.php, .env, README.md in $dir"
+    exit 1
+  fi
+
+  echo "Database credentials for $site  (from $src)"
+  printf '  %-10s %s\n' host     "${dbhost:-127.0.0.1}"
+  printf '  %-10s %s\n' database "${db:-?}"
+  printf '  %-10s %s\n' user     "${dbuser:-?}"
+  printf '  %-10s %s\n' password "${dbpass:-?}"
+  echo
+  echo "  connect:  mysql -h ${dbhost:-127.0.0.1} -u ${dbuser:-USER} -p'${dbpass:-}' ${db:-}"
+
+  if [[ -f "$dir/wp-config.php" ]]; then
+    echo
+    echo "  The WordPress admin password is hashed in the database and cannot be"
+    echo "  shown again. Reset it with:"
+    echo "    wp user update ${ADMIN_USER:-admin} --user_pass='new-password' --path=$dir"
+  fi
+}
+
 VERSION="0.1.0"
 
 cmd_mysql() {
@@ -1348,6 +1395,7 @@ case "${1:-}" in
   new)     shift; cmd_new "$@" ;;
   list)    cmd_list ;;
   rm)      shift; cmd_rm "$@" ;;
+  creds)   shift; cmd_creds "${1:-}" ;;
   tunnel)  shift; cmd_tunnel "${1:-}" ;;
   queue)   shift; worker_toggle queue "${1:-}" "${2:-}" ;;
   schedule) shift; worker_toggle schedule "${1:-}" "${2:-}" ;;

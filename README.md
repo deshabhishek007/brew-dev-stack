@@ -28,6 +28,7 @@ devstack new api --type=laravel   # composer create-project, .env wired, migrate
 devstack tunnel blog              # a public URL for Stripe / GitHub webhooks
 devstack php 8.2 --site=legacy    # pin one site; every other stays on the default
 devstack logs blog                # its debug.log, live
+devstack creds blog               # forgot the database password? here it is
 ```
 
 Every directory under `~/sites` is already serving at `https://<name>.test` with a
